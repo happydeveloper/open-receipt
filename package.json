@@ -1,0 +1,40 @@
+{
+  "name": "open-receipt",
+  "version": "0.1.0",
+  "description": "영수증을 올리면 AI 에이전트가 증빙 묶음을 완성하는, 작은 단체를 위한 지출 기록·결산 도구",
+  "license": "GPL-3.0-or-later",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test e2e/demo.spec.ts",
+    "test:live": "LIVE=1 playwright test e2e/live.spec.ts"
+  },
+  "dependencies": {
+    "@ag-ui/client": "^1.0.5",
+    "@ag-ui/core": "^1.0.5",
+    "@ag-ui/encoder": "^1.0.5",
+    "@astryxdesign/core": "^0.7.17",
+    "@astryxdesign/theme-neutral": "^0.7.17",
+    "@stylexjs/stylex": "^0.19.2",
+    "@vercel/blob": "^2.9.0",
+    "next": "^15.5.29",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@astryxdesign/cli": "0.7.17",
+    "@playwright/test": "^1.65.1",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
