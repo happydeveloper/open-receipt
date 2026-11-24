@@ -4,10 +4,68 @@
 
 - 소개 페이지: https://open-receipt-six.vercel.app (취지, 실제 화면으로 보는 사용법, 출시 알림 신청)
 - 앱: https://open-receipt-six.vercel.app/app
+- 시연 영상: https://youtu.be/BgRsjSCLiHw
 - 모델과 검색: Liner Model API(도구 호출 + 이미지 입력), Liner Search API
 - 에이전트와 화면 사이의 통신: [AG-UI 프로토콜](https://docs.ag-ui.com/) 1.0
 - 개발자 안내: https://open-receipt-six.vercel.app/developers (다른 서비스에서 에이전트를 부르는 방법, 예제, 직접 실행)
 - 화면: Meta의 오픈소스 디자인 시스템 [Astryx](https://github.com/meta/astryx) (`@astryxdesign/core`, neutral 테마)
+
+## 시연 영상
+
+[![열린영수증 시연 영상](https://img.youtube.com/vi/BgRsjSCLiHw/hqdefault.jpg)](https://youtu.be/BgRsjSCLiHw)
+
+그림을 누르면 유튜브에서 열립니다: https://youtu.be/BgRsjSCLiHw
+
+## 실행 방법
+
+Node.js 22 이상이 필요합니다.
+
+```bash
+git clone https://github.com/happydeveloper/open-receipt.git
+cd open-receipt
+npm install
+cp .env.example .env.local   # LINER_API_KEY 입력 (https://platform.liner.com/keys)
+npm run dev                  # http://localhost:3000
+```
+
+브라우저에서 http://localhost:3000 을 열면 소개 페이지가, http://localhost:3000/app 을 열면 앱이 나옵니다. 앱에서 **데모 데이터 불러오기**를 누르면 가상 단체와 가상 영수증으로 바로 써 볼 수 있습니다.
+
+API 키는 서버(`lib/liner.ts`)에서만 읽습니다. 키가 없어도 앱은 열리고 직접 입력으로 쓸 수 있습니다. 설치 없이 써 보려면 배포본(https://open-receipt-six.vercel.app/app)을 여세요.
+
+| 환경 변수 | 필요 | 내용 |
+| --- | --- | --- |
+| `LINER_API_KEY` | 에이전트를 쓰려면 | Liner Platform API 키 |
+| `LINER_MODEL` | 선택 | 모델 이름. 기본값 `liner-gpt-router` |
+| `BLOB_READ_WRITE_TOKEN` | 배포 환경에서 단체 공간을 쓰려면 | Vercel Blob 저장소 토큰. Vercel에서 Blob 저장소를 연결하면 자동으로 들어갑니다. 로컬 개발에서는 없어도 되고 `.data/` 폴더에 저장합니다 |
+| `NEXT_PUBLIC_SOURCE_URL` | 선택 | 소스 저장소 주소. 넣으면 소개 페이지에 "소스 코드 받기" 버튼이 나옵니다 |
+
+### 직접 배포하기
+
+Vercel에 올리는 경우: 저장소를 Vercel 프로젝트로 가져오고, 환경 변수에 `LINER_API_KEY`를 넣고, Storage에서 Blob 저장소(비공개)를 만들어 프로젝트에 연결합니다. 다른 곳에 올리려면 `lib/sync-store.ts`의 `SyncStore` 인터페이스를 그곳의 저장소로 구현하면 됩니다.
+
+## Liner API를 사용한 기능
+
+핵심 기능인 두 에이전트가 Liner Model API와 Liner Search API로 동작합니다. 호출은 모두 서버의 `lib/liner.ts`를 거칩니다.
+
+| 기능 | 쓰는 API | 하는 일 | 코드 |
+| --- | --- | --- | --- |
+| 영수증 읽기 | Model API (이미지 입력) | 가린 영수증 사진에서 일자, 금액, 가맹점, 항목, 결제 방식을 읽어 기록을 채웁니다 | `lib/agent.ts`의 `update_record` |
+| 지출 에이전트 | Model API (도구 호출) | 모델이 도구 여섯 개 가운데 다음에 쓸 것을 스스로 골라 가며 증빙 묶음을 완성합니다. 지난 기록을 참고해 사업과 예산 항목을 맞추고, 빠진 것을 점검하고, 알 수 없는 것만 사용자에게 묻습니다 | `lib/agent.ts`의 `runExpenseAgent` |
+| 공개 지침 검색 | Search API | 지출 종류와 결제 방식에 맞는 공개 정산·증빙 지침을 검색합니다. 결과가 맞지 않으면 에이전트가 검색어를 바꿔 다시 찾습니다 (한 번 실행에 3번까지) | `lib/agent.ts`의 `search_guidelines` |
+| 확인할 자료 | Model API + Search API | 검색 결과를 읽고 이 지출에서 챙길 자료를 출처 링크와 함께 정리합니다. 검색 결과에 실제로 있는 주소가 달린 항목만 남깁니다 | `lib/agent.ts`의 `validChecklist` |
+| 기록 요약 | Model API | 지출 한 건을 결산보고서에 들어갈 두 문장 이내로 요약합니다 | `lib/agent.ts`의 `finish` |
+| 여러 장 올리기 | Model API, Search API | 영수증 30장까지를 두 장씩 지출 에이전트에 맡겨 초안으로 정리합니다 | `app/app/page.tsx`의 `runBulk` |
+| 마감 점검 에이전트 | Model API (도구 호출), Search API | 사업의 기록을 모두 살펴 보완이 필요한 건마다 담당자에게 보낼 요청 문안을 쓰고 브리핑을 만듭니다 | `lib/agent.ts`의 `runCloseAgent` |
+
+호출 방식:
+
+- **Model API**: `POST https://platform.liner.com/api/v1/chat/completions`. 기본 모델은 `liner-gpt-router`이고, 도구 호출을 필수로 겁니다(`tool_choice: "required"`). 영수증 사진은 메시지의 이미지 파트(data URI)로 보냅니다.
+- **Search API**: `POST https://platform.liner.com/api/v1/tools/search/web`. 한 번에 8건을 받습니다.
+- **키 보호**: `LINER_API_KEY`는 서버에서만 읽고 브라우저로 나가지 않습니다. 테스트가 이를 확인합니다(`tests/proxy.test.ts`).
+- **실패 대비**: 429와 5xx는 한 번 다시 시도하고, 30초 안에 응답이 없으면 끊습니다. 어떤 오류든 사용자는 직접 입력으로 계속할 수 있습니다.
+- **보내는 것**: 가린 사진, 숫자 패턴을 가린 메모, 기록 값만 보냅니다. 원본 사진은 보내지 않습니다.
+
+에이전트가 쓰는 도구 전체와 안전장치는 아래 "에이전트가 하는 일"에 있습니다.
 
 ## 문서
 
@@ -205,29 +263,6 @@ curl -N https://open-receipt-six.vercel.app/api/agent/expense \
 화면은 Astryx 컴포넌트(Button, TextInput, TextArea, Selector, SegmentedControl, Card, Banner, List, Table, Token, EmptyState 등)와 neutral 테마로 구성했습니다. 설정은 `app/globals.css`(스타일 4개 import)와 `app/providers.tsx`(테마 공급자)에 있습니다. Astryx에 없는 부품 세 가지(앱 틀, 영수증 가림 영역, 에이전트 진행 로그)만 직접 만들었고 색과 간격은 테마 토큰을 씁니다. 설정 점검은 `npx astryx doctor --built .`로 합니다.
 
 공식 CLI는 `@astryxdesign/cli`입니다. 이름이 비슷한 `astryx` 패키지는 무관한 것이니 `npx astryx`는 이 저장소처럼 CLI가 설치된 상태에서만 쓰세요.
-
-## 로컬 실행
-
-Node.js 22 이상이 필요합니다.
-
-```bash
-npm install
-cp .env.example .env.local   # LINER_API_KEY 입력 (https://platform.liner.com/keys)
-npm run dev                  # http://localhost:3000
-```
-
-API 키는 서버(`lib/liner.ts`)에서만 읽습니다. 키가 없어도 앱은 열리고 직접 입력으로 쓸 수 있습니다.
-
-| 환경 변수 | 필요 | 내용 |
-| --- | --- | --- |
-| `LINER_API_KEY` | 에이전트를 쓰려면 | Liner Platform API 키 |
-| `LINER_MODEL` | 선택 | 모델 이름. 기본값 `liner-gpt-router` |
-| `BLOB_READ_WRITE_TOKEN` | 배포 환경에서 단체 공간을 쓰려면 | Vercel Blob 저장소 토큰. Vercel에서 Blob 저장소를 연결하면 자동으로 들어갑니다. 로컬 개발에서는 없어도 되고 `.data/` 폴더에 저장합니다 |
-| `NEXT_PUBLIC_SOURCE_URL` | 선택 | 소스 저장소 주소. 넣으면 소개 페이지에 "소스 코드 받기" 버튼이 나옵니다 |
-
-### 직접 배포하기
-
-Vercel에 올리는 경우: 저장소를 Vercel 프로젝트로 가져오고, 환경 변수에 `LINER_API_KEY`를 넣고, Storage에서 Blob 저장소(비공개)를 만들어 프로젝트에 연결합니다. 다른 곳에 올리려면 `lib/sync-store.ts`의 `SyncStore` 인터페이스를 그곳의 저장소로 구현하면 됩니다.
 
 ## 테스트
 
