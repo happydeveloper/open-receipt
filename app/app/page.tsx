@@ -43,6 +43,7 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toCsv, totalAmount, sortByDate, evidenceLabel } from "@/lib/csv";
 import { applyAgentRecord, editField, fallbackSummary, lockedFields, recordValues } from "@/lib/flow";
+import { groupable, mergeGroup, stillValid, toGroupDocs, type GroupProposal } from "@/lib/group";
 import { fitWithin, maskText, type Box } from "@/lib/mask";
 import { ATTACH_LABELS, newAttachmentId, photoKey, slotsOf } from "@/lib/photos";
 import { buildReport, reportPhotos, reportToHtml, won } from "@/lib/report";
@@ -298,6 +299,11 @@ export default function Home() {
   const [closeOut, setCloseOut] = useState<CloseResult | null>(null);
   const [closeErr, setCloseErr] = useState("");
   const [copied, setCopied] = useState("");
+  // 묶음 에이전트: 같은 거래의 서류를 찾아 합치자고 제안한다
+  const [groupPhase, setGroupPhase] = useState<Phase>("idle");
+  const [groupSteps, setGroupSteps] = useState<AgentStep[]>([]);
+  const [groups, setGroups] = useState<GroupProposal[]>([]);
+  const [groupNote, setGroupNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
   const [dragBox, setDragBox] = useState<Box | null>(null);
@@ -434,8 +440,10 @@ export default function Home() {
   const set = <K extends keyof Expense>(k: K, v: Expense[K]) => setCur((c) => editField(c, k, v));
   const go = (v: View) => { setView(v); setErr(""); setToast(""); window.scrollTo(0, 0); };
   const resetClose = () => { setClosePhase("idle"); setCloseSteps([]); setCloseOut(null); setCloseErr(""); };
+  const resetGroup = () => { setGroupPhase("idle"); setGroupSteps([]); setGroups([]); setGroupNote(""); };
 
   function startAdd() {
+    resetGroup();
     // 사업·행사는 비워 둔다. 에이전트가 지난 기록을 보고 채우거나 묻는다.
     setCur(newExpense({ project: "", submittedBy: SUBMITTER }));
     setEditing(false); setMemo(""); setRaw(null); setBoxes([]); setErr("");
@@ -528,6 +536,7 @@ export default function Home() {
       const pending = await runOnce(agent, [ASK_USER_TOOL], (s) => setSteps((p) => [...p, s]), context);
       const st = agent.state as any;
       let next = applyAgentRecord(base, st.record ?? {}, st.aiFields ?? [], pending.length ? "" : st.summary ?? "");
+      if (st.docType && next.evidence.image) next = { ...next, evidence: { ...next.evidence, docType: String(st.docType) } };
       if (pending.length) {
         const calls = agent.messages.flatMap((msg: any) => (msg.role === "assistant" ? msg.toolCalls ?? [] : []));
         const qs: AgentQuestion[] = [];
@@ -719,6 +728,7 @@ export default function Home() {
       const st = agent.state as any;
       let next = applyAgentRecord(base, st.record ?? {}, st.aiFields ?? [], st.summary ?? "");
       if (!next.summary) next = { ...next, summary: fallbackSummary(next) };
+      if (st.docType) next = { ...next, evidence: { ...next.evidence, docType: String(st.docType) } };
       if (st.checklist?.length) next = { ...next, guidance: { query: "", sources: st.sources ?? [], checklist: st.checklist, searchedAt: new Date().toISOString() } };
       persist([...live.current.list, next]); // 초안으로 저장. 확정은 사람이 한다.
       const miss = missingFields(next);
@@ -734,6 +744,67 @@ export default function Home() {
     const worker = async () => { for (let it = queue.shift(); it; it = queue.shift()) await runBulkOne(it); };
     await Promise.all([worker(), worker()]);
     resetClose(); setBulkBusy(false);
+    // 방금 올린 서류 가운데 같은 거래의 것이 있는지 바로 살핀다.
+    void runGroup(true);
+  }
+
+  /* ---------- 같은 거래의 서류 묶기 ---------- */
+  /** 이 사업의 서류 가운데 합칠 수 있는 것 (승인 전이고 사진이 있는 기록). */
+  const groupPool = () => live.current.list.filter((e) => e.project === project && groupable(e));
+  /** 묶음 에이전트를 돌린다. quiet면 견줄 서류가 없을 때나 실패했을 때 조용히 넘어간다. */
+  async function runGroup(quiet = false) {
+    const docs = toGroupDocs(groupPool());
+    if (docs.length < 2) { resetGroup(); if (!quiet) { setGroupNote("견줄 서류가 두 장보다 적습니다."); setGroupPhase("done"); } return; }
+    setGroupPhase("running"); setGroupSteps([]); setGroups([]); setGroupNote("");
+    try {
+      const agent = new HttpAgent({ url: "/api/agent/group" });
+      agent.addMessage({ id: crypto.randomUUID(), role: "user", content: "따로 올라온 서류 가운데 같은 거래의 서류를 찾아 묶음을 제안해 주세요." } as any);
+      agent.setState({ documents: docs, groups: [], note: "" });
+      await runOnce(agent, [], (s) => setGroupSteps((p) => [...p, s]));
+      const st = agent.state as any;
+      // 서버가 준 제안도 지금 기록과 견줘 한 번 더 걸러 낸다.
+      const found = stillValid(st.groups, toGroupDocs(groupPool()));
+      setGroups(found); setGroupNote(found.length ? "" : String(st.note || "한 거래로 묶을 서류를 찾지 못했습니다.")); setGroupPhase("done");
+    } catch (e: any) {
+      if (quiet) return resetGroup();
+      setGroupNote((e.message || "서류를 살피지 못했습니다.").replace(MANUAL, "지출 상세의 \"자료 붙이기\"로 직접 묶을 수 있습니다.")); setGroupPhase("error");
+    }
+  }
+  /** 기록 여러 건을 한 건으로 합쳐 저장한다. 사라지는 기록의 원본 사진은 남는 기록 아래로 옮긴다. */
+  async function applyMerge(main: Expense, others: Expense[]) {
+    const { merged, removed, moves } = mergeGroup(main, others, SUBMITTER);
+    for (const m of moves) {
+      const original = await deviceOriginals.get(m.from);
+      if (original) await deviceOriginals.put(m.to, original);
+      await deviceOriginals.del(m.from);
+    }
+    const gone = new Set(removed);
+    // 다른 기기에서 되살아나지 않도록 삭제 기록을 남긴다.
+    if (live.current.meta.ws) {
+      const at = new Date().toISOString();
+      keepMeta({ ...live.current.meta, tombstones: { ...live.current.meta.tombstones, ...Object.fromEntries(removed.map((id) => [id, at])) } });
+    }
+    const cur2 = live.current.list;
+    persist(cur2.some((x) => x.id === merged.id) ? cur2.filter((x) => !gone.has(x.id)).map((x) => (x.id === merged.id ? merged : x)) : [...cur2.filter((x) => !gone.has(x.id)), merged]);
+    resetClose();
+    return merged;
+  }
+  /** 사람이 제안을 받아들였을 때. 그 사이 기록이 바뀌었으면 합치지 않는다. */
+  async function acceptGroup(g: GroupProposal) {
+    const pool = groupPool();
+    const main = pool.find((e) => e.id === g.mainId);
+    const others = g.ids.filter((id) => id !== g.mainId).map((id) => pool.find((e) => e.id === id));
+    setGroups((gs) => gs.filter((x) => x !== g));
+    if (!main || others.some((o) => !o)) return setToast("그 사이 기록이 바뀌어 합치지 못했습니다. 다시 찾아 주세요.");
+    const merged = await applyMerge(main, others as Expense[]);
+    setToast(`${merged.item || "지출"} ${won(merged.amount ?? 0)}: 서류 ${g.ids.length}장을 한 건으로 합쳤습니다.`);
+  }
+  /** 지금 올리던 서류를 새 지출로 저장하지 않고, 이미 있는 기록의 자료로 붙인다. */
+  async function attachToExisting(existing: Expense) {
+    try {
+      const merged = await applyMerge(existing, [cur]);
+      setCur(merged); go("detail"); setToast("새 지출을 만들지 않고, 이 기록의 자료로 붙였습니다.");
+    } catch (e: any) { setErr(e.message || "자료를 붙이지 못했습니다."); }
   }
   /** 필수 정보가 다 채워진 초안을 한꺼번에 확정한다. */
   function confirmDrafts() {
@@ -762,6 +833,40 @@ export default function Home() {
       masked: p.image,
       loadOriginal: p.original ? () => deviceOriginals.get(p.key) : undefined,
     }));
+
+  /** 묶음 제안 카드. 여러 장 올리기 화면과 검토 화면이 함께 쓴다. */
+  const docLine = (id: string) => {
+    const e = list.find((x) => x.id === id);
+    return e ? `${md(e.date)} · ${e.evidence.docType || "서류"} · ${e.item || "항목 미입력"} · ${won(e.amount ?? 0)}` : "지워진 기록";
+  };
+  const groupCard = (
+    <Card data-testid="group-card">
+      <VStack gap={3}>
+        <Heading level={2}>같은 거래 찾기</Heading>
+        {groupPhase === "idle" ? <Note>카드영수증, 거래명세서, 주문 화면 캡처처럼 한 번 쓴 돈의 서류가 따로 올라와 있으면, 에이전트가 찾아 한 건으로 합치자고 제안합니다. 합치는 것은 직접 누를 때만 됩니다.</Note> : null}
+        {groupSteps.length > 0 || groupPhase === "running" ? <Log items={groupSteps} running={groupPhase === "running"} /> : null}
+        {groupNote ? (groupPhase === "error" ? <Banner status="error" title={groupNote} /> : <Note>{groupNote}</Note>) : null}
+        {groups.map((g) => (
+          <Card key={g.ids.join("+")} variant="muted" padding={3} data-testid="group">
+            <VStack gap={2}>
+              <Text weight="semibold">한 거래로 보이는 서류 {g.ids.length}장</Text>
+              <List hasDividers edge="flush" density="compact">
+                {g.ids.map((id) => <ListItem key={id} label={<Text hasTabularNumbers>{docLine(id)}</Text>} endContent={id === g.mainId ? <Token label="남길 기록" color="green" size="sm" /> : undefined} />)}
+              </List>
+              <Text>{g.reason}</Text>
+              {g.mismatch ? <Banner status="warning" title="확인할 점" description={g.mismatch} /> : null}
+              <Note>합치면 "남길 기록" 한 건만 남고, 나머지 서류는 그 기록의 자료로 붙습니다. 금액은 더하지 않습니다.</Note>
+              <HStack gap={2}>
+                <Main label="한 건으로 합치기" onClick={() => acceptGroup(g)} />
+                <Sub label="따로 두기" onClick={() => setGroups((gs) => gs.filter((x) => x !== g))} />
+              </HStack>
+            </VStack>
+          </Card>
+        ))}
+        {groupPhase !== "running" ? <Sub label={groupPhase === "idle" ? "같은 거래 찾기" : "다시 찾기"} onClick={() => runGroup()} /> : null}
+      </VStack>
+    </Card>
+  );
 
   if (!ready) return <Frame title="열린영수증"><Note>불러오는 중…</Note></Frame>;
 
@@ -876,6 +981,8 @@ export default function Home() {
         ) : null}
         <Note>AI에는 여기서 가린 사진만 보냅니다. 이름이나 카드번호 전체가 보이는 영수증은 "가리기"로 가린 뒤 맡겨 주세요. 원본은 등록자와 승인자만 볼 수 있습니다.</Note>
         {done > 0 && !bulkBusy ? <Banner status="success" title={`${done}장을 초안으로 정리했습니다.`} description="목록에서 한 건씩 열어 확인하거나, 필수 정보가 다 채워진 초안을 한꺼번에 확정할 수 있습니다." /> : null}
+        {toast ? <Banner status="success" title={toast} /> : null}
+        {groupPhase !== "idle" && !bulkBusy ? groupCard : null}
         <VStack className="grow" />
         <Main label={bulkBusy ? `정리하는 중… (${done}/${bulk.length})` : todo ? `${todo}장 에이전트에게 맡기기` : "에이전트에게 맡기기"} isDisabled={bulkBusy || todo === 0} onClick={runBulk} />
         <Sub label="지출 목록으로" isDisabled={bulkBusy} onClick={() => { setBulk((b) => b.filter((x) => x.state !== "done")); go("list"); }} />
@@ -1100,7 +1207,7 @@ export default function Home() {
             <VStack className="grow" />
             {draftsReady > 0 ? <Sub label={`초안 ${draftsReady}건 한꺼번에 확정`} onClick={confirmDrafts} /> : null}
             <Main label="+ 지출 추가" onClick={startAdd} />
-            <Sub label="영수증 여러 장 올리기" onClick={() => { setErr(""); setBulkMask(null); go("bulk"); }} />
+            <Sub label="영수증 여러 장 올리기" onClick={() => { setErr(""); setBulkMask(null); resetGroup(); go("bulk"); }} />
             <HStack gap={2}>
               <Sub label="검토 목록" onClick={() => go("review")} />
               <Sub label="결산보고서" onClick={() => go("report")} />
@@ -1120,6 +1227,7 @@ export default function Home() {
         <Rows items={mine} onOpen={openDetail} dup={dupIds} />
         {toast ? <Banner status="success" title={toast} /> : null}
         {mine.some((e) => dupIds.has(e.id)) ? <Banner status="warning" title={`같은 영수증일 수 있는 기록 ${mine.filter((e) => dupIds.has(e.id)).length}건`} description="날짜와 금액이 같은 기록입니다. 목록에서 '중복 확인' 표시가 있는 건을 열어 확인해 주세요." data-testid="dup-review" /> : null}
+        {groupCard}
         <Card>
           <VStack gap={2}>
             <Heading level={2}>마감 전 체크 · 보완이 필요한 {attention.length}건</Heading>
@@ -1274,6 +1382,8 @@ export default function Home() {
     if (f === "merchant") return text("merchant", "가맹점");
     return text("item", "항목", "예: 행사 다과");
   }
+  // 지금 올리는 서류가 이미 있는 기록과 같은 거래로 보이면, 새 지출 대신 그 기록의 자료로 붙일 수 있다.
+  const dupTarget = !list.some((x) => x.id === cur.id) && groupable(cur) ? findDuplicates(cur, list).find((x) => !x.approvedBy) : undefined;
   const bundleRows: [string, string][] = [
     ["영수증", cur.evidence.kind === "receipt" && cur.evidence.image ? "첨부됨 (가림 처리)" : cur.evidence.kind === "alternative" ? `대체: ${cur.evidence.altType}` : "없음"],
     ["지출", `${md(cur.date)} · ${cur.item || "항목 미입력"} · ${won(cur.amount ?? 0)}`],
@@ -1386,6 +1496,7 @@ export default function Home() {
           ) : <Note>이 지출에 연결할 공개 지침은 찾지 못했습니다. 교부 조건 문서를 직접 확인해 주세요.</Note>}
           <Note>판정이 아니라 안내입니다. 내용을 확인하고 확정하는 것은 담당자입니다.</Note>
           {dupBanner(cur)}
+          {dupTarget ? <Sub label="기존 기록에 자료로 붙이기" onClick={() => attachToExisting(dupTarget)} /> : null}
           <Main label="내용 확정" onClick={confirm} />
           <Sub label="수정" onClick={() => setStep("edit")} />
         </> : null}

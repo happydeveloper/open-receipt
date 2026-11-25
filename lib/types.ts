@@ -31,6 +31,8 @@ export interface Evidence {
   original?: boolean;
   altType?: string;
   reason?: string;
+  /** 영수증 자리의 서류 종류 (카드영수증, 거래명세서 …). 지출 에이전트가 사진을 읽을 때 적는다. */
+  docType?: string;
   /** 같은 거래의 다른 자료. 지출 건수와 금액은 늘지 않는다. */
   extra?: Attachment[];
 }

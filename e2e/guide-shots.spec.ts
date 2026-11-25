@@ -7,7 +7,8 @@
  */
 import { test, type Browser, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { askTurn, closeTurn, doneTurn, ndjson } from "./mocks";
+import { act, askTurn, closeTurn, doneTurn, finished, groupTurn, ndjson, sseBody, started } from "./mocks";
+import { draw, sheets } from "./papers";
 
 test.skip(!process.env.SHOTS_GUIDE, "SHOTS_GUIDE=1일 때만 실행");
 const phone = { viewport: { width: 390, height: 780 }, deviceScaleFactor: 2, locale: "ko-KR" };
@@ -170,4 +171,45 @@ test("사용 안내용 화면 캡처", async ({ page, browser }) => {
   await hideDevTools(sponsor);
   await sponsor.screenshot({ path: "public/guide/s02-receipts.png" });
   await shot(sponsor, "s03-print", sponsor.getByRole("button", { name: "인쇄" }));
+});
+
+/** 여러 장을 한꺼번에 올린 뒤, 같은 거래의 서류를 한 건으로 합치는 화면. */
+test("사용 안내용 화면 캡처: 같은 거래 묶기", async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  const read = [
+    { record: { date: "2026-11-18", amount: 26400, merchant: "가상페이먼츠", item: "행사 다과", paymentMethod: "org_card" }, docType: "카드영수증" },
+    { record: { date: "2026-11-19", amount: 26400, merchant: "(주)가상몰", item: "행사 다과", paymentMethod: "org_card" }, docType: "거래명세서" },
+    { record: { date: "2026-11-18", amount: 26400, merchant: "가상몰", item: "행사 다과", paymentMethod: "org_card" }, docType: "주문내역" },
+    { record: { date: "2026-11-18", amount: 18000, merchant: "가상인쇄소", item: "현수막", paymentMethod: "org_card" }, docType: "간이영수증" },
+  ];
+  let seen = 0;
+  await page.route("**/api/agent/expense", async (route) => {
+    const body = route.request().postDataJSON();
+    const p = read[seen++ % read.length];
+    await route.fulfill({ ...ndjson, body: sseBody(started, act("update_record", "기록을 채웠습니다"), { type: "STATE_SNAPSHOT", snapshot: { ...body.state, record: { ...body.state.record, ...p.record }, docType: p.docType, aiFields: Object.keys(p.record), summary: `${p.record.item} 구입.`, checklist: [], sources: [] } }, finished()) });
+  });
+  await page.route("**/api/agent/group", async (route) => {
+    const docs = route.request().postDataJSON().state.documents;
+    const same = docs.filter((d: any) => d.amount === 26400);
+    const main = same.find((d: any) => d.docType === "카드영수증") ?? same[0];
+    await route.fulfill({ ...ndjson, body: groupTurn(docs, same.length >= 2 ? [{ ids: same.map((d: any) => d.id), mainId: main.id, reason: "세 서류의 금액이 26,400원으로 같고 모두 가상몰 거래입니다. 주문일과 발행일이 하루 차이입니다.", mismatch: "" }] : []) });
+  });
+  const files = [];
+  for (const [name, html] of sheets) files.push({ name, mimeType: "image/png", buffer: await draw(browser, html) });
+
+  await page.goto("/app");
+  await page.getByRole("button", { name: "데모 데이터 불러오기" }).click();
+  await page.getByRole("button", { name: "영수증 여러 장 올리기" }).click();
+  await page.locator("#bulk-files").setInputFiles(files);
+  await page.getByTestId("bulk-list").getByText("인쇄영수증.png").waitFor();
+  await shot(page, "g01-bulk", page.getByRole("button", { name: "4장 에이전트에게 맡기기" }));
+  await page.getByRole("button", { name: "4장 에이전트에게 맡기기" }).click();
+  await page.getByTestId("group").waitFor({ timeout: 60_000 });
+  await shot(page, "g02-group", page.getByTestId("group").getByRole("button", { name: "한 건으로 합치기" }));
+  await page.getByTestId("group").getByRole("button", { name: "한 건으로 합치기" }).click();
+  await page.getByText(/한 건으로 합쳤습니다/).first().waitFor();
+  await page.getByRole("button", { name: "지출 목록으로" }).click();
+  await page.getByText("행사 다과").first().click();
+  await page.getByTestId("attachments").waitFor();
+  await shot(page, "g03-merged", page.getByTestId("attachments"));
 });

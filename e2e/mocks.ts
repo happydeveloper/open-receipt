@@ -54,3 +54,12 @@ export const closeTurn = sseBody(
 );
 export const ndjson = { status: 200, contentType: "text/event-stream" };
 
+/** 묶음 에이전트의 가짜 응답. groups가 비어 있으면 "찾지 못했습니다"로 끝난다. */
+export const groupTurn = (documents: object[], groups: object[] = []) => sseBody(
+  started,
+  act("list_documents", `서류 ${documents.length}장을 훑었습니다`),
+  ...groups.map((g: any) => act("propose_group", `서류 ${g.ids.length}장을 한 거래로 제안했습니다`)),
+  act("finish", groups.length ? `묶음 ${groups.length}개를 찾았습니다` : "한 거래로 묶을 서류를 찾지 못했습니다"),
+  { type: "STATE_SNAPSHOT", snapshot: { documents, groups, note: groups.length ? `한 거래로 보이는 묶음 ${groups.length}개를 찾았습니다.` : "한 거래로 묶을 서류를 찾지 못했습니다." } },
+  finished(),
+);

@@ -58,6 +58,7 @@
 | --- | --- | --- |
 | `POST /api/agent/expense` | 지출 에이전트 실행 (AG-UI) | `lib/agui-server.ts` → `lib/agent.ts` |
 | `POST /api/agent/close` | 마감 점검 에이전트 실행 (AG-UI) | 같음 |
+| `POST /api/agent/group` | 묶음 에이전트 실행 (AG-UI) | 같음 |
 | `GET·PUT /api/sync/[id]` | 단체 공간 문서 (암호문) | `lib/sync-store.ts` |
 | `GET·PUT /api/sync/[id]/img/[eid]` | 영수증 사진 (암호문) | 같음 |
 | `GET·PUT /api/sync/[id]/view` | 후원자용 자료 (암호문) | 같음 |
@@ -83,7 +84,8 @@
 | 파일 | 내용 |
 | --- | --- |
 | `liner.ts` | Liner API 호출. API 키를 읽는 유일한 곳 |
-| `agent.ts` | 두 에이전트의 도구, 지시문, 반복 루프 |
+| `agent.ts` | 세 에이전트(지출, 마감 점검, 묶음)의 도구, 지시문, 반복 루프 |
+| `group.ts` | 같은 거래의 서류 묶기: 묶음 제안 검증, 여러 기록을 한 건으로 합치는 규칙 |
 | `agui-server.ts` | 에이전트의 진행을 AG-UI 이벤트 스트림으로 바꾸는 어댑터 |
 | `guard.ts`, `mask.ts`, `guidelines.ts`, `draft.ts` | 판정 표현 걸러내기, 민감 정보 가림, 검색 결과 다듬기, 금액 다듬기 |
 | `rate-limit.ts` | 에이전트 엔드포인트 호출 제한 |

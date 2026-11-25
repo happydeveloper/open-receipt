@@ -7,6 +7,7 @@
  */
 import { chatWithTools, searchWeb, type LinerDeps, defaultDeps, type ToolCall } from "./liner";
 import { normalizeAmount } from "./draft";
+import { cleanProposals, DOC_TYPES, normalizeDocType, type GroupDoc, type GroupProposal } from "./group";
 import { softenJudgment } from "./guard";
 import { toSources } from "./guidelines";
 import { maskText } from "./mask";
@@ -49,6 +50,8 @@ export interface ExpenseRunInput {
 }
 export interface ExpenseRunOutput {
   status: "ask" | "done";
+  /** 사진이 어떤 서류인지 (카드영수증, 거래명세서 …). 읽지 못했으면 빈 문자열 */
+  docType: string;
   record: RecordValues;
   aiFields: string[];
   questions: AgentQuestion[];
@@ -66,6 +69,7 @@ export interface LoopHooks {
   onResult?(c: { id: string; name: string; content: string }): void;
   onStep?(s: AgentStep, callId?: string): void;
   onRecord?(applied: RecordValues): void;
+  onDocType?(docType: string): void;
 }
 
 /** 도구 하나를 실행한 결과. result는 모델에게 돌려주고, step은 화면에 보여 준다. */
@@ -195,7 +199,7 @@ export const EXPENSE_SYSTEM = `당신은 소규모 비영리단체·동아리의
 도구를 스스로 골라 순서대로 진행하세요. 한 번에 여러 도구를 불러도 됩니다.
 
 일하는 방식:
-1. 가장 먼저, 영수증 이미지와 메모에 보이는 값(일자, 합계 금액, 가맹점, 결제 방식, 항목)을 update_record로 옮깁니다. 보이지 않는 값은 넣지 않습니다. item은 품목 나열이 아니라 "행사 다과"처럼 2~4단어의 지출 이름으로 씁니다.
+1. 가장 먼저, 영수증 이미지와 메모에 보이는 값(일자, 합계 금액, 가맹점, 결제 방식, 항목)을 update_record로 옮깁니다. 보이지 않는 값은 넣지 않습니다. item은 품목 나열이 아니라 "행사 다과"처럼 2~4단어의 지출 이름으로 씁니다. 이미지가 있으면 어떤 서류인지도 docType에 적습니다 (카드영수증, 간이영수증, 거래명세서, 주문내역(쇼핑몰 주문 화면 캡처), 이체확인증, 견적서, 기타).
 2. lookup_history로 이 단체의 지난 기록을 확인합니다. 지난 기록의 사업·행사가 하나뿐이고 이번 지출 날짜와 맞으면 project를, 비슷한 지출이 있으면 budgetCategory를 채웁니다.
 3. check_bundle로 무엇이 빠졌는지 확인합니다.
 4. 스스로 알 수 없는 것만 ask_user로 묻습니다. 목적, 결제자, 환급 여부는 추측하지 말고 물으세요. 한 번에 최대 3개, 친근한 한국어로.
@@ -292,6 +296,7 @@ export async function runExpenseAgent(input: ExpenseRunInput, deps: LinerDeps = 
   const canAsk = input.canAsk !== false;
   let finishWarned = false;
   let lastChecked = "";
+  let docType = "";
 
   const tools: Tool[] = [
     {
@@ -310,11 +315,15 @@ export async function runExpenseAgent(input: ExpenseRunInput, deps: LinerDeps = 
           budgetCategory: { type: "string" },
           payer: { type: "string" },
           reimbursement: { type: "string", enum: ["needed", "not_needed"] },
+          docType: { type: "string", enum: [...DOC_TYPES], description: "이미지가 어떤 서류인지. 나중에 같은 거래의 서류를 묶을 때 쓴다" },
         },
       },
       run(args) {
         const applied: string[] = [];
         const skipped: string[] = [];
+        // 서류 종류는 기록 값이 아니라 사진에 대한 정보다. 따로 적어 둔다.
+        const seen = normalizeDocType(args.docType);
+        if (seen && seen !== docType) { docType = seen; hooks.onDocType?.(seen); }
         for (const f of RECORD_FIELDS) {
           if (!(f in args)) continue;
           const v = normalizeField(f, args[f]);
@@ -444,7 +453,7 @@ export async function runExpenseAgent(input: ExpenseRunInput, deps: LinerDeps = 
   const usable = canAsk ? tools : tools.filter((t) => t.name !== "ask_user");
   const system = canAsk ? EXPENSE_SYSTEM : EXPENSE_SYSTEM + "\n\n이번 실행에서는 사용자에게 물을 수 없습니다. 있는 정보로 기록을 채우고, 빠진 것은 그대로 둔 채 finish로 마무리하세요.";
   const stop = (await runLoop({ system, messages, tools: usable, deps, hooks })) as any;
-  const base = { record, aiFields: [...aiFields], sources: state.sources, searches: state.searches, asks: state.asks };
+  const base = { record, docType, aiFields: [...aiFields], sources: state.sources, searches: state.searches, asks: state.asks };
   if (stop?.status === "ask") return { ...base, status: "ask", questions: stop.questions, pendingCallId: stop.pendingCallId, summary: "", checklist: [] };
   if (stop?.status === "done") return { ...base, status: "done", questions: [], summary: stop.summary, checklist: stop.checklist };
   hooks.onStep?.({ tool: "finish", label: "정리를 마쳤습니다", detail: "단계 수 한도에 도달해 지금까지의 내용으로 마무리" });
@@ -552,4 +561,92 @@ export async function runCloseAgent(
     requests: [...requests.values()],
     sources: state.sources,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* 묶음 에이전트                                                        */
+/* ------------------------------------------------------------------ */
+
+export interface GroupAgentOutput {
+  groups: GroupProposal[];
+  note: string;
+}
+
+export const GROUP_SYSTEM = `당신은 소규모 단체의 총무를 돕는 "열린영수증" 묶음 에이전트입니다.
+목표: 따로 올라온 서류들 가운데 같은 거래 한 건의 서류(카드영수증, 거래명세서, 쇼핑몰 주문 화면 캡처, 이체확인증 등)를 찾아 한 묶음으로 제안합니다. 그대로 두면 한 번 쓴 돈이 여러 건으로 잡힙니다.
+
+일하는 방식:
+1. list_documents로 서류 목록을 봅니다. 서류마다 날짜, 금액, 가맹점, 항목, 결제 방식, 서류 종류가 있습니다.
+2. 같은 거래로 보이는 서류들을 propose_group으로 제안합니다. 묶음마다 한 번씩 부릅니다.
+3. 다 살폈으면 finish로 마칩니다.
+
+같은 거래로 볼 근거:
+- 금액이 같고 날짜가 같거나 며칠 안쪽입니다 (주문일, 결제일, 발행일은 다를 수 있습니다).
+- 가맹점 표기가 달라도 같은 곳일 수 있습니다. 카드영수증에는 결제대행사나 줄인 이름이, 거래명세서에는 정식 상호가 적힙니다.
+- 서류 종류가 서로 다릅니다 (예: 카드영수증 + 거래명세서 + 주문내역). 같은 종류의 서류 두 장이 날짜·금액까지 같으면 같은 서류를 두 번 올린 것일 수 있으니 그 사실을 이유에 적습니다.
+- 금액이 조금 다르면 배송비, 할인, 부가세 때문일 수 있습니다. 묶되 mismatch에 무엇이 다른지 적습니다.
+
+규칙:
+- 확실하지 않으면 묶지 않습니다. 같은 가게에서 같은 날 따로 산 두 건을 하나로 묶으면 안 됩니다.
+- 한 서류는 한 묶음에만 넣습니다.
+- mainId에는 결제를 증명하는 서류(카드영수증, 간이영수증)를 우선으로 고릅니다.
+- reason은 한두 문장으로, 무엇이 맞아서 묶는지 적습니다. "위반", "부적법" 같은 판정은 하지 않습니다.
+- 합치는 것은 사람이 결정합니다. 당신은 제안만 합니다.
+- 목록에 없는 사실을 지어내지 않습니다.`;
+
+/** 같은 거래의 서류를 찾아 묶음을 제안한다. 기록을 바꾸는 도구는 없다. */
+export async function runGroupAgent(input: { documents: GroupDoc[]; messages?: any[] }, deps: LinerDeps = defaultDeps(), hooks: LoopHooks = {}): Promise<GroupAgentOutput> {
+  const docs = (Array.isArray(input.documents) ? input.documents : []).slice(0, 60).map((d) => ({
+    id: String(d?.id ?? ""), date: String(d?.date ?? ""), amount: typeof d?.amount === "number" ? d.amount : null, merchant: maskText(String(d?.merchant ?? "")).slice(0, 80),
+    item: maskText(String(d?.item ?? "")).slice(0, 80), payment: String(d?.payment ?? "").slice(0, 20), docType: normalizeDocType(d?.docType), photos: Number(d?.photos) || 0,
+  })).filter((d) => d.id);
+  if (docs.length < 2) return { groups: [], note: "견줄 서류가 두 장보다 적습니다." };
+  const raw: unknown[] = [];
+  const name = (id: string) => { const d = docs.find((x) => x.id === id); return d ? d.docType || d.item || "서류" : ""; };
+  const tools: Tool[] = [
+    {
+      name: "list_documents",
+      description: "따로 올라온 서류 목록을 조회한다 (날짜, 금액, 가맹점, 항목, 결제 방식, 서류 종류).",
+      parameters: { type: "object", properties: {} },
+      run() {
+        return { result: { count: docs.length, documents: docs }, step: { tool: "list_documents", label: `서류 ${docs.length}장을 훑었습니다` } };
+      },
+    },
+    {
+      name: "propose_group",
+      description: "같은 거래로 보이는 서류들을 한 묶음으로 제안한다. 합치지는 않는다. 사람이 확인한 뒤 합친다.",
+      parameters: {
+        type: "object",
+        properties: {
+          ids: { type: "array", items: { type: "string" }, description: "묶을 서류의 id (2개 이상)" },
+          mainId: { type: "string", description: "남길 서류의 id. 결제를 증명하는 서류를 우선" },
+          reason: { type: "string", description: "한두 문장의 이유" },
+          mismatch: { type: "string", description: "서류끼리 어긋나는 점. 없으면 빈 문자열" },
+        },
+        required: ["ids", "reason"],
+      },
+      run(args) {
+        // 지금까지의 제안과 합쳐 검증한다. 새 제안이 살아남지 못했으면 이유를 돌려준다.
+        const before = cleanProposals(raw, docs).length;
+        const after = cleanProposals([...raw, args], docs);
+        if (after.length === before) return { result: { error: "받을 수 없는 묶음입니다. 목록에 있는 서류 2장 이상이어야 하고, 이미 다른 묶음에 든 서류는 넣을 수 없습니다." } };
+        raw.push(args);
+        const g = after[after.length - 1];
+        return { result: { ok: true, ids: g.ids, mainId: g.mainId }, emitArgs: g, step: { tool: "propose_group", label: `서류 ${g.ids.length}장을 한 거래로 제안했습니다`, detail: g.ids.map(name).join(" + ") } };
+      },
+    },
+    {
+      name: "finish",
+      description: "살피기를 마친다.",
+      parameters: { type: "object", properties: { note: { type: "string", description: "한 문장 정리" } } },
+      run(args) {
+        const n = cleanProposals(raw, docs).length;
+        return { result: { ok: true }, stop: { note: softenJudgment(String(args.note ?? "").trim().slice(0, 300)).text }, step: { tool: "finish", label: n ? `묶음 ${n}개를 찾았습니다` : "한 거래로 묶을 서류를 찾지 못했습니다" } };
+      },
+    },
+  ];
+  const messages: any[] = input.messages?.length ? input.messages : [{ role: "user", content: "따로 올라온 서류 가운데 같은 거래의 서류를 찾아 묶음을 제안해 주세요." }];
+  const stop = (await runLoop({ system: GROUP_SYSTEM, messages, tools, deps, hooks, maxTurns: 6 })) as any;
+  const groups = cleanProposals(raw, docs);
+  return { groups, note: stop?.note || (groups.length ? `한 거래로 보이는 묶음 ${groups.length}개를 찾았습니다.` : "한 거래로 묶을 서류를 찾지 못했습니다.") };
 }

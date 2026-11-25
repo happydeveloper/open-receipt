@@ -169,6 +169,7 @@ export default function DevelopersPage() {
             data={[
               { url: `${base}/api/agent/expense`, agent: "지출 에이전트", does: "영수증·메모에서 기록을 채우고, 모르는 것은 묻고, 공개 지침을 찾아 증빙 묶음을 완성" },
               { url: `${base}/api/agent/close`, agent: "마감 점검 에이전트", does: "기록 전체를 훑어 브리핑과 건별 보완 요청 문안 초안 작성" },
+              { url: `${base}/api/agent/group`, agent: "묶음 에이전트", does: "따로 올라온 서류 가운데 같은 거래의 것(카드영수증, 거래명세서, 주문 화면)을 찾아 묶음을 제안" },
             ]}
             columns={[{ key: "agent", header: "에이전트" }, { key: "url", header: "주소 (POST)", renderCell: (x) => <Text type="code">{x.url}</Text> }, { key: "does", header: "하는 일" }]}
           />

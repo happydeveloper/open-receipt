@@ -38,7 +38,7 @@ export interface PhotoSlot {
 }
 
 /** 영수증 자리의 이름표. 대체 증빙이면 그 종류를 쓴다. */
-const mainLabel = (e: Expense) => (e.evidence.kind === "alternative" ? e.evidence.altType || "대체 증빙" : "영수증");
+const mainLabel = (e: Expense) => (e.evidence.kind === "alternative" ? e.evidence.altType || "대체 증빙" : e.evidence.docType || "영수증");
 
 /** 이 지출의 사진 자리 전부 (영수증 먼저, 그다음 함께 묶은 자료 순서). 비어 있는 영수증 자리는 뺀다. */
 export function slotsOf(e: Expense): PhotoSlot[] {

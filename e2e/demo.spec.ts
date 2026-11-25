@@ -6,7 +6,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
-import { sseBody, started, finished, act, base, agentState, askQuestions, askTurn, sources, summary, checklist, doneTurn, closeTurn, ndjson } from "./mocks";
+import { sseBody, started, finished, act, base, agentState, askQuestions, askTurn, sources, summary, checklist, doneTurn, closeTurn, ndjson, groupTurn } from "./mocks";
 
 async function toMask(page: Page) {
   await page.goto("/app");
@@ -484,6 +484,12 @@ test("영수증 여러 장 올리기: 한꺼번에 올리면 에이전트가 한
     const record = { ...body.state.record, date: `2026-11-2${i}`, item: `준비물 ${i}`, paymentMethod: "org_card", ...(i === 3 ? {} : { amount: 1000 * i }) };
     await route.fulfill({ ...ndjson, body: sseBody(started, act("update_record", "기록을 채웠습니다"), { type: "STATE_SNAPSHOT", snapshot: { ...body.state, record, aiFields: ["date", "item", "paymentMethod", "amount"], summary: `준비물 ${i} 구입.`, checklist: [], sources: [] } }, finished()) });
   });
+  // 올리기가 끝나면 묶음 에이전트가 한 번 돈다. 여기서는 묶을 것이 없다고 답한다.
+  const groupBodies: any[] = [];
+  await page.route("**/api/agent/group", async (route) => {
+    groupBodies.push(route.request().postDataJSON());
+    await route.fulfill({ ...ndjson, body: groupTurn(groupBodies.at(-1).state.documents) });
+  });
   await page.goto("/app");
   await page.getByRole("button", { name: "데모 데이터 불러오기" }).click();
   await page.getByRole("button", { name: "영수증 여러 장 올리기" }).click();
@@ -502,6 +508,10 @@ test("영수증 여러 장 올리기: 한꺼번에 올리면 에이전트가 한
   await page.getByRole("button", { name: "3장 에이전트에게 맡기기" }).click();
   await expect(page.getByText("3장을 초안으로 정리했습니다.")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("bulk-list")).toContainText("확인 필요: 금액");
+  await expect(page.getByTestId("group-card")).toContainText("한 거래로 묶을 서류를 찾지 못했습니다.");
+  expect(groupBodies).toHaveLength(1);
+  expect(groupBodies[0].state.documents).toHaveLength(3);
+  expect(JSON.stringify(groupBodies[0])).not.toContain("data:image"); // 사진은 보내지 않는다
 
   // 요청: 한 장씩, 가린 사진과 공통 메모, 사업은 미리 정해 잠금, 질문 도구 없음
   expect(bodies).toHaveLength(3);

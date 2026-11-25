@@ -10,7 +10,7 @@
 import { EventType } from "@ag-ui/core";
 import { RunAgentInputSchema } from "@ag-ui/core/schemas";
 import { EventEncoder } from "@ag-ui/encoder";
-import { expenseKickoffText, normalizeRecord, runCloseAgent, runExpenseAgent, type AgentStep, type LoopHooks, type RecordValues } from "./agent";
+import { expenseKickoffText, normalizeRecord, runCloseAgent, runExpenseAgent, runGroupAgent, type AgentStep, type LoopHooks, type RecordValues } from "./agent";
 import { toSources } from "./guidelines";
 import { defaultDeps, LinerError, type LinerDeps } from "./liner";
 import type { Expense } from "./types";
@@ -176,7 +176,7 @@ export async function handleExpenseRun(req: Request, deps?: LinerDeps): Promise<
   return sse(
     input,
     async (emit) => {
-      const snapshot = { record, locked, aiFields, evidence, history, sources: toSources(st.sources ?? []), searches: Number(st.searches) || 0, asks: Number(st.asks) || 0, summary: "", checklist: [] as unknown[] };
+      const snapshot = { record, docType: "", locked, aiFields, evidence, history, sources: toSources(st.sources ?? []), searches: Number(st.searches) || 0, asks: Number(st.asks) || 0, summary: "", checklist: [] as unknown[] };
       emit({ type: EventType.STATE_SNAPSHOT, snapshot });
       const last = (input.messages as any[]).at(-1);
       if (last?.role === "tool") emit({ type: EventType.ACTIVITY_SNAPSHOT, messageId: `act-answer-${input.runId}`, activityType: ACTIVITY_TYPE, content: { tool: ASK_USER_TOOL, label: "답변을 받았습니다", detail: "" } });
@@ -198,6 +198,9 @@ export async function handleExpenseRun(req: Request, deps?: LinerDeps): Promise<
               }
             }
             emit({ type: EventType.STATE_DELTA, delta });
+          },
+          onDocType(docType: string) {
+            emit({ type: EventType.STATE_DELTA, delta: [{ op: "replace", path: "/docType", value: docType }] });
           },
         },
       );
@@ -254,5 +257,35 @@ export async function handleCloseRun(req: Request, deps?: LinerDeps): Promise<Re
       return { result: { status: "done", requests: out.requests.length } };
     },
     "agent/close",
+  );
+}
+
+/* ---------- 묶음 에이전트 ---------- */
+
+/** 같은 거래의 서류 찾기. state.documents에 서류 요약 목록을 받는다 (사진은 받지 않는다). */
+export async function handleGroupRun(req: Request, deps?: LinerDeps): Promise<Response> {
+  let input;
+  try {
+    input = await readInput(req);
+  } catch (e) {
+    return bad(e instanceof BadInput ? e.message : "요청을 처리할 수 없습니다.");
+  }
+  const st = (input.state && typeof input.state === "object" ? input.state : {}) as any;
+  if (!Array.isArray(st.documents)) return bad("state.documents가 필요합니다.");
+  const documents = st.documents.slice(0, 60);
+  const messages = toModelMessages(input.messages as any[]);
+  return sse(
+    input,
+    async (emit) => {
+      emit({ type: EventType.STATE_SNAPSHOT, snapshot: { documents, groups: [], note: "" } });
+      const out = await runGroupAgent({ documents, messages }, deps ?? defaultDeps(), eventHooks(emit));
+      emit({ type: EventType.STATE_DELTA, delta: [{ op: "replace", path: "/groups", value: out.groups }, { op: "replace", path: "/note", value: out.note }] });
+      const messageId = `group-${input.runId}`;
+      emit({ type: EventType.TEXT_MESSAGE_START, messageId, role: "assistant" });
+      emit({ type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: out.note });
+      emit({ type: EventType.TEXT_MESSAGE_END, messageId });
+      return { result: { status: "done", groups: out.groups.length } };
+    },
+    "agent/group",
   );
 }

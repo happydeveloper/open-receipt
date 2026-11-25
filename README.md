@@ -46,7 +46,7 @@ Vercel에 올리는 경우: 저장소를 Vercel 프로젝트로 가져오고, �
 
 ## Liner API를 사용한 기능
 
-핵심 기능인 두 에이전트가 Liner Model API와 Liner Search API로 동작합니다. 호출은 모두 서버의 `lib/liner.ts`를 거칩니다.
+핵심 기능인 세 에이전트(지출, 마감 점검, 묶음)가 Liner Model API와 Liner Search API로 동작합니다. 호출은 모두 서버의 `lib/liner.ts`를 거칩니다.
 
 | 기능 | 쓰는 API | 하는 일 | 코드 |
 | --- | --- | --- | --- |
@@ -55,6 +55,7 @@ Vercel에 올리는 경우: 저장소를 Vercel 프로젝트로 가져오고, �
 | 공개 지침 검색 | Search API | 지출 종류와 결제 방식에 맞는 공개 정산·증빙 지침을 검색합니다. 결과가 맞지 않으면 에이전트가 검색어를 바꿔 다시 찾습니다 (한 번 실행에 3번까지) | `lib/agent.ts`의 `search_guidelines` |
 | 확인할 자료 | Model API + Search API | 검색 결과를 읽고 이 지출에서 챙길 자료를 출처 링크와 함께 정리합니다. 검색 결과에 실제로 있는 주소가 달린 항목만 남깁니다 | `lib/agent.ts`의 `validChecklist` |
 | 기록 요약 | Model API | 지출 한 건을 결산보고서에 들어갈 두 문장 이내로 요약합니다 | `lib/agent.ts`의 `finish` |
+| 같은 거래 묶기 | Model API (도구 호출) | 카드영수증, 거래명세서, 주문 화면 캡처처럼 한 번 쓴 돈의 서류가 따로 올라오면, 날짜·금액·가맹점·서류 종류를 견줘 같은 거래를 추론하고 한 건으로 합치자고 제안합니다. 가맹점 표기나 날짜가 조금 달라도 찾습니다. 합치는 것은 사람이 누를 때만 됩니다 | `lib/agent.ts`의 `runGroupAgent`, `lib/group.ts` |
 | 여러 장 올리기 | Model API, Search API | 영수증 30장까지를 두 장씩 지출 에이전트에 맡겨 초안으로 정리합니다 | `app/app/page.tsx`의 `runBulk` |
 | 마감 점검 에이전트 | Model API (도구 호출), Search API | 사업의 기록을 모두 살펴 보완이 필요한 건마다 담당자에게 보낼 요청 문안을 쓰고 브리핑을 만듭니다 | `lib/agent.ts`의 `runCloseAgent` |
 
@@ -202,6 +203,7 @@ docs/           구조 안내
 | --- | --- | --- |
 | `/api/agent/expense` | 지출 에이전트 | `record`, `locked`, `evidence`, `history`. 단체 이름·지원기관·현재 사업은 `context`로 전달 |
 | `/api/agent/close` | 마감 점검 에이전트 | `project`, `records` |
+| `/api/agent/group` | 묶음 에이전트 | `documents` (서류별 날짜, 금액, 가맹점, 항목, 결제 방식, 서류 종류). 결과는 `groups` |
 
 한 번의 실행에서 오가는 이벤트:
 
@@ -270,8 +272,8 @@ curl -N https://open-receipt-six.vercel.app/api/agent/expense \
 
 ```bash
 npm run typecheck   # 형식 검사
-npm test            # 단위 테스트 90개. 한 거래로 묶기, AG-UI 왕복·이벤트 스키마 검증, 두 기기 동기화, 서명 원장, 공유 링크 등 (Liner는 모의)
-npm run test:e2e    # 브라우저 흐름 15개: 시연, 사용 안내, 영수증과 거래명세서 묶기, 첫 방문, 보고서 공유, 두 기기 단체 공간, 후원자용 보기, 서명 원장 등 (에이전트 응답은 모의)
+npm test            # 단위 테스트 101개. 한 거래로 묶기, 같은 거래 찾기, AG-UI 왕복·이벤트 스키마 검증, 두 기기 동기화, 서명 원장, 공유 링크 등 (Liner는 모의)
+npm run test:e2e    # 브라우저 흐름 16개: 시연, 사용 안내, 같은 거래 찾아 합치기, 영수증과 거래명세서 묶기, 첫 방문, 보고서 공유, 두 기기 단체 공간, 후원자용 보기, 서명 원장 등 (에이전트 응답은 모의)
 npm run test:live   # 실제 Liner 호출로 전체 흐름. 개발 서버와 LINER_API_KEY, 크레딧 필요
 ```
 
