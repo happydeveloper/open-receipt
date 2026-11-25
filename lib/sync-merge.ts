@@ -7,6 +7,7 @@
  *   단, 지운 뒤에 다른 기기에서 다시 고친 기록은 살린다.
  * - 사진은 문서에 넣지 않고 IMAGE_REF 표시만 둔다. 사진은 건별로 따로 올린다.
  */
+import { isPhoto, mapPhotos, photosOf } from "./photos";
 import { withStatus } from "./status";
 import type { Ledger } from "./ledger";
 import type { Expense } from "./types";
@@ -66,14 +67,15 @@ export function mergeExpenses(local: Expense[], remote: Expense[], localTombs: T
 /** 문서에 넣을 때 이미지를 자리표시로 바꾼다. */
 export function stripImages(list: Expense[]): Expense[] {
   // "local:image"는 사진을 아직 불러오지 못한 기기의 표시다. 다른 기기에는 자리표시로 넘긴다.
-  return list.map((e) => (e.evidence.image && (e.evidence.image.length > 200 || e.evidence.image === "local:image") ? { ...e, evidence: { ...e.evidence, image: IMAGE_REF } } : e));
+  return list.map((e) => mapPhotos(e, (img) => (isPhoto(img) || img === "local:image" ? IMAGE_REF : img)));
 }
-/** 내려받은 문서의 자리표시를 이 기기가 가진 이미지로 되돌린다. 없는 것은 자리표시로 남는다. */
+/** 내려받은 문서의 자리표시를 이 기기가 가진 이미지로 되돌린다. 없는 것은 자리표시로 남는다. have의 키는 사진 이름(lib/photos.ts)이다. */
 export function restoreImages(list: Expense[], have: Map<string, string>): Expense[] {
-  return list.map((e) => (e.evidence.image === IMAGE_REF && have.has(e.id) ? { ...e, evidence: { ...e.evidence, image: have.get(e.id) } } : e));
+  return list.map((e) => mapPhotos(e, (img, key) => (img === IMAGE_REF && have.has(key) ? have.get(key) : img)));
 }
+/** 이 기기가 가진 사진 전부 (사진 이름 → 사진). 영수증과 함께 묶은 자료를 모두 담는다. */
 export function imagesOf(list: Expense[]): Map<string, string> {
   const m = new Map<string, string>();
-  for (const e of list) if (e.evidence.image && e.evidence.image.length > 200) m.set(e.id, e.evidence.image);
+  for (const e of list) for (const p of photosOf(e)) m.set(p.key, p.image);
   return m;
 }

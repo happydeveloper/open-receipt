@@ -1,0 +1,189 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/**
+ * 사용 안내 (/guide). 등록자, 승인자, 후원자가 각자 무엇을 누르면 되는지 실제 화면으로 보여 준다.
+ * 화면 사진(public/guide/)은 e2e/guide-shots.spec.ts가 실제 앱을 캡처해 만든다. 눌러야 할 곳에 빨간 테두리가 있다.
+ * 배치는 소개 페이지와 같은 app/landing.css를 쓴다.
+ */
+"use client";
+
+import { Button } from "@astryxdesign/core/Button";
+import "../landing.css";
+
+interface Step {
+  /** public/guide/ 안의 사진 이름 */
+  shot: string;
+  title: string;
+  /** 따라 할 일. 한 줄에 한 동작 */
+  todo: string[];
+  /** 덧붙이는 설명 (선택) */
+  tip?: string;
+  alt: string;
+}
+interface Role {
+  id: string;
+  name: string;
+  who: string;
+  summary: string;
+  need: string;
+  steps: Step[];
+}
+
+const roles: Role[] = [
+  {
+    id: "submitter",
+    name: "등록자",
+    who: "총무·재정 담당",
+    summary: "영수증을 올리고, 승인을 받은 뒤 결산보고서를 내보냅니다.",
+    need: "휴대폰이나 컴퓨터의 인터넷 브라우저, 그리고 영수증 사진. 가입이나 설치는 필요 없습니다.",
+    steps: [
+      { shot: "r01-start", title: "우리 단체 정보를 적고 시작합니다", todo: ["앱을 엽니다.", "단체 이름, 내 이름, 승인하는 사람, 첫 사업·행사 이름을 적습니다.", "\"시작하기\"를 누릅니다."], tip: "먼저 둘러보고 싶으면 \"데모 데이터 불러오기\"를 누르세요. 가상 단체와 가상 지출이 들어 있습니다.", alt: "단체 이름, 내 이름, 승인하는 사람, 첫 사업 이름을 적는 시작 화면. 시작하기 버튼에 표시가 있다." },
+      { shot: "r02-add", title: "\"+ 지출 추가\"를 누릅니다", todo: ["지출 목록 화면에서 \"+ 지출 추가\"를 누릅니다."], tip: "영수증이 여러 장이면 \"영수증 여러 장 올리기\"로 한꺼번에 올릴 수 있습니다.", alt: "지출 목록 화면. 지출 추가 버튼에 표시가 있다." },
+      { shot: "r03-upload", title: "영수증 사진을 고릅니다", todo: ["\"사진 선택\"을 눌러 영수증 사진을 고릅니다.", "하고 싶은 말이 있으면 메모에 적습니다. (예: 간식 샀어요)", "\"다음: 가릴 부분 확인\"을 누릅니다."], tip: "영수증이 없으면 \"영수증이 없어요\"를 누르고 사유를 적으면 됩니다.", alt: "영수증 사진을 올린 화면. 다음 버튼에 표시가 있다." },
+      { shot: "r04-mask", title: "이름과 카드번호를 가립니다", todo: ["사진에서 가리고 싶은 곳을 손가락으로 끌어 칠합니다.", "잘못 칠했으면 \"되돌리기\"를 누릅니다.", "\"에이전트에게 맡기기\"를 누릅니다."], tip: "AI와 후원자는 가린 사진만 봅니다. 원본은 등록자와 승인자만 볼 수 있습니다.", alt: "영수증의 구매자 이름 부분을 검게 가린 화면. 에이전트에게 맡기기 버튼에 표시가 있다." },
+      { shot: "r05-ask", title: "에이전트가 묻는 것에만 답합니다", todo: ["에이전트가 날짜, 금액, 가게를 읽어 채웁니다. 기다리면 됩니다.", "사진만으로 알 수 없는 것(무엇을 위해 샀는지, 누가 냈는지)을 물으면 답을 적습니다.", "\"답하고 계속\"을 누릅니다."], tip: "모르면 비워 두고 넘어가도 됩니다. 나중에 고칠 수 있습니다.", alt: "에이전트가 한 일이 순서대로 보이고, 목적과 결제자를 묻는 질문 카드가 있는 화면." },
+      { shot: "r06-confirm", title: "내용을 확인하고 \"내용 확정\"을 누릅니다", todo: ["정리된 내용이 맞는지 읽어 봅니다. 틀린 곳은 \"수정\"으로 고칩니다.", "\"확인할 자료\"에 챙길 자료가 출처와 함께 나옵니다.", "맞으면 \"내용 확정\"을 누릅니다."], tip: "확정은 사람이 합니다. 에이전트는 대신 확정하지 않습니다.", alt: "한 줄 요약과 증빙 묶음, 확인할 자료가 보이는 화면. 내용 확정 버튼에 표시가 있다." },
+      { shot: "r07-saved", title: "거래명세서가 있으면 함께 붙입니다", todo: ["저장이 끝났습니다. 온라인으로 산 물건이라 거래명세서나 주문내역이 있으면 \"거래명세서 등 자료 붙이기\"를 누릅니다.", "없으면 \"검토 목록 보기\"로 넘어갑니다."], alt: "저장 완료 화면. 거래명세서 등 자료 붙이기 버튼에 표시가 있다." },
+      { shot: "r08-attach", title: "자료 사진을 고르고 \"이 지출에 붙이기\"를 누릅니다", todo: ["자료 종류(거래명세서, 주문내역, 이체확인증 등)를 고릅니다.", "\"사진 선택\"으로 자료를 찍은 사진이나 화면 캡처를 고릅니다.", "이름·주소를 끌어서 가립니다.", "\"이 지출에 붙이기\"를 누릅니다."], tip: "새 지출이 생기지 않습니다. 영수증과 거래명세서가 한 건으로 묶이고, 금액도 그대로입니다.", alt: "거래명세서 사진에서 받는 사람 주소를 가린 화면. 이 지출에 붙이기 버튼에 표시가 있다." },
+      { shot: "r09-bundle", title: "한 지출에 자료가 묶였는지 확인합니다", todo: ["지출 상세에 영수증과 거래명세서가 함께 보입니다.", "\"함께 묶은 자료\"에서 더 붙이거나 뗄 수 있습니다."], alt: "지출 상세 화면의 함께 묶은 자료 카드. 거래명세서가 붙어 있다." },
+      { shot: "r10-settings", title: "승인자를 초대하려면 \"설정\"을 누릅니다", todo: ["지출 목록 화면 맨 아래의 \"설정\"을 누릅니다."], tip: "혼자 쓰는 단체라면 이 단계를 건너뛰고 검토 목록에서 바로 승인할 수 있습니다.", alt: "지출 목록 화면. 설정 버튼에 표시가 있다." },
+      { shot: "r11-invite", title: "초대 링크를 승인자에게 보냅니다", todo: ["\"단체 공간 만들기\"를 누릅니다.", "초대 링크가 생기면 \"초대 링크 복사\"를 누릅니다.", "복사한 링크를 메신저로 승인자(대표)에게 보냅니다."], tip: "초대 링크를 가진 사람은 기록을 보고 고칠 수 있습니다. 단체 사람에게만 보내세요.", alt: "설정 화면의 단체 공간. 초대 링크 칸에 표시가 있다." },
+      { shot: "r12-close", title: "마감 전에 빠진 것을 점검합니다", todo: ["지출 목록에서 \"검토 목록\"을 누릅니다.", "\"마감 점검 맡기기\"를 누르면 에이전트가 빠진 증빙을 찾아 줍니다.", "담당자에게 보낼 요청 문안이 나오면 \"문안 복사\"로 복사해 직접 보냅니다."], tip: "에이전트는 메시지를 보내지 않습니다. 보내는 것은 사람이 합니다.", alt: "마감 점검 에이전트가 쓴 브리핑과 보완 요청 문안이 보이는 화면." },
+      { shot: "r13-report", title: "결산보고서를 봅니다", todo: ["\"결산보고서 보기\"를 누릅니다.", "건수, 합계, 예산 항목별 금액이 표로 정리되어 있습니다.", "아래로 내리면 지출 내역과 영수증 사진이 있습니다."], alt: "결산보고서 초안. 요약과 예산 항목별 집행 표가 보인다." },
+      { shot: "r15-download", title: "보고서를 내려받습니다", todo: ["보고서 화면 아래의 \"보고서 내려받기\"를 누릅니다.", "내려받은 파일 안에 표와 가린 영수증 사진이 함께 들어 있습니다.", "엑셀로 보려면 \"CSV 내려받기\"를 누릅니다."], tip: "종이로 내야 하면 맨 아래 \"인쇄\"를 누르세요.", alt: "결산보고서 아래쪽. 보고서 내려받기 버튼에 표시가 있다." },
+      { shot: "r14-sponsor-link", title: "후원자에게 보기 전용 링크를 보냅니다", todo: ["\"설정\"에서 \"후원자용 보기\"를 \"열림\"으로 바꿉니다.", "\"후원자용 링크 복사\"를 누릅니다.", "복사한 링크를 후원자에게 보냅니다."], tip: "후원자는 결산보고서와 가린 사진만 봅니다. 그만 보여 주려면 \"닫힘\"으로 바꾸면 됩니다.", alt: "설정 화면의 후원자용 보기. 후원자용 보기 링크 칸에 표시가 있다." },
+    ],
+  },
+  {
+    id: "approver",
+    name: "승인자",
+    who: "대표",
+    summary: "등록자가 올린 지출을 내 휴대폰에서 확인하고 승인합니다.",
+    need: "등록자가 보내 준 초대 링크.",
+    steps: [
+      { shot: "a01-join", title: "초대 링크를 열고 참여합니다", todo: ["등록자가 보낸 초대 링크를 누릅니다.", "내 이름을 적습니다.", "\"승인하는 사람\"을 고릅니다.", "\"참여하기\"를 누릅니다."], tip: "여기에 적은 이름이 승인자 이름으로 기록됩니다.", alt: "단체 공간 참여 화면. 이름을 적고 승인하는 사람을 고른 상태. 참여하기 버튼에 표시가 있다." },
+      { shot: "a02-list", title: "올라온 지출을 눌러 봅니다", todo: ["지출 목록에서 \"승인 대기\"라고 적힌 지출을 누릅니다."], alt: "지출 목록. 승인 대기 상태인 행사 다과 지출에 표시가 있다." },
+      { shot: "a03-detail", title: "영수증을 확인합니다", todo: ["금액, 목적, 결제한 사람을 읽어 봅니다.", "영수증 사진을 봅니다. \"원본\"을 누르면 가리지 않은 사진을 볼 수 있습니다.", "다 봤으면 \"지출 목록으로\"를 누릅니다."], tip: "원본은 등록자와 승인자만 볼 수 있습니다.", alt: "지출 상세 화면. 가린 사진과 원본을 바꿔 보는 단추에 표시가 있다." },
+      { shot: "a04-approve", title: "\"승인\"을 누릅니다", todo: ["지출 목록에서 \"검토 목록\"을 누릅니다.", "확인한 지출 옆의 \"승인\"을 누릅니다."], tip: "\"보완\"이라고 적힌 지출은 증빙이 빠진 것입니다. 등록자가 채운 뒤에 승인할 수 있습니다.", alt: "검토 화면. 행사 다과 지출 옆 승인 버튼에 표시가 있다." },
+      { shot: "a05-approved", title: "승인이 끝났습니다", todo: ["\"승인했습니다\"라는 안내가 나오면 끝입니다.", "등록자의 화면에도 승인된 것으로 바뀝니다."], tip: "승인한 뒤에 등록자가 내용을 고치면 승인이 풀립니다. 그때는 다시 확인하고 승인하면 됩니다.", alt: "행사 다과 26,400원을 승인했다는 안내가 보이는 검토 화면." },
+    ],
+  },
+  {
+    id: "sponsor",
+    name: "후원자",
+    who: "후원자·지원기관",
+    summary: "단체가 보내 준 링크로 결산보고서와 영수증을 확인합니다.",
+    need: "단체가 보내 준 후원자용 링크. 가입도 설치도 필요 없습니다.",
+    steps: [
+      { shot: "s01-report", title: "링크를 열면 결산보고서가 보입니다", todo: ["단체가 보낸 링크를 누릅니다.", "지출 건수, 합계, 예산 항목별 금액을 봅니다."], tip: "보기만 할 수 있습니다. 아무것도 고쳐지지 않으니 편하게 눌러 보세요.", alt: "후원자에게 공유된 결산보고서. 요약과 예산 항목별 집행 표가 보인다." },
+      { shot: "s02-receipts", title: "아래로 내려 영수증을 확인합니다", todo: ["화면을 아래로 내립니다.", "\"영수증\"에 지출마다 영수증과 거래명세서 사진이 있습니다."], tip: "이름과 카드번호처럼 개인정보는 검게 가려져 있습니다.", alt: "후원자 화면의 영수증 구역. 가린 영수증과 거래명세서가 차례로 보인다." },
+      { shot: "s03-print", title: "인쇄하거나 새로 고칩니다", todo: ["종이로 보관하려면 \"인쇄\"를 누릅니다.", "최신 내용을 보려면 \"새로 고침\"을 누릅니다."], tip: "\"변조 확인용 지문\"은 기록이 바뀌면 달라지는 번호입니다. 지난번에 본 뒤로 기록이 바뀌었으면 화면이 알려 줍니다.", alt: "후원자 화면 맨 아래. 변조 확인용 지문과 인쇄 버튼이 보인다." },
+    ],
+  },
+];
+
+/** 세 사람이 차례로 하는 일. 맨 위에서 전체 흐름을 먼저 보여 준다. */
+const flow: [string, string][] = [
+  ["1. 등록자", "영수증을 올리고 내용을 확정합니다"],
+  ["2. 등록자", "초대 링크를 승인자에게 보냅니다"],
+  ["3. 승인자", "지출을 확인하고 승인합니다"],
+  ["4. 등록자", "결산보고서를 내려받고 후원자 링크를 보냅니다"],
+  ["5. 후원자", "링크로 보고서와 영수증을 봅니다"],
+];
+
+export default function Guide() {
+  return (
+    <div className="lp gd">
+      <header className="lp-nav">
+        <div className="lp-wrap">
+          <a className="lp-brand" href="/"><img src="/icon-192.png" alt="" />열린영수증</a>
+          <nav className="lp-nav-links">
+            {roles.map((r) => <span className="lp-hide-sm" key={r.id}><Button label={r.name} variant="ghost" size="sm" href={`#${r.id}`} /></span>)}
+            <Button label="지금 써 보기" variant="primary" size="sm" href="/app" />
+          </nav>
+        </div>
+      </header>
+
+      <main>
+        <section>
+          <div className="lp-wrap">
+            <div className="lp-head">
+              <p className="lp-eyebrow">사용 안내</p>
+              <h1>화면을 보고 그대로 따라 하세요</h1>
+              <p className="lp-lead">영수증을 올리는 것부터 승인, 결산보고서 공유까지 차례로 보여 드립니다. 내 역할을 골라 그 부분만 보셔도 됩니다. 빨간 테두리가 있는 곳을 누르면 됩니다.</p>
+            </div>
+            <div className="lp-grid3" data-testid="guide-roles">
+              {roles.map((r) => (
+                <a className="lp-card gd-role" href={`#${r.id}`} key={r.id}>
+                  <h3>{r.name} <span>({r.who})</span></h3>
+                  <p>{r.summary}</p>
+                  <b>{r.steps.length}단계 보기</b>
+                </a>
+              ))}
+            </div>
+            <h2 className="gd-flow-title">전체 순서</h2>
+            <ol className="lp-flow">
+              {flow.map(([who, what]) => <li key={who + what}><b>{who}</b><span>{what}</span></li>)}
+            </ol>
+            <p className="lp-note" style={{ marginTop: "var(--spacing-4)" }}>화면은 모두 실제 앱을 휴대폰 크기로 열어 찍은 것입니다. 보이는 단체, 영수증, 거래명세서는 가상 자료입니다.</p>
+          </div>
+        </section>
+
+        {roles.map((r, ri) => (
+          <section id={r.id} className={ri % 2 === 0 ? "lp-tint" : undefined} key={r.id}>
+            <div className="lp-wrap">
+              <div className="lp-head">
+                <p className="lp-eyebrow">{r.who}</p>
+                <h2>{r.name}는 이렇게 합니다</h2>
+                <p className="lp-sub">{r.summary}</p>
+                <p className="gd-need"><b>준비물</b> {r.need}</p>
+              </div>
+              <ol className="lp-steps">
+                {r.steps.map((s, i) => (
+                  <li className="lp-step" key={s.shot} data-testid="guide-step">
+                    <div className="lp-step-text">
+                      <span className="lp-step-no">{r.name} {i + 1} / {r.steps.length}</span>
+                      <h3>{s.title}</h3>
+                      <ol className="gd-todo">{s.todo.map((t) => <li key={t}>{t}</li>)}</ol>
+                      {s.tip ? <p className="gd-tip">{s.tip}</p> : null}
+                    </div>
+                    <div className="lp-step-media">
+                      <div className="lp-phone"><img src={`/guide/${s.shot}.png`} alt={s.alt} width={780} height={1560} loading="lazy" /></div>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+              <div className="lp-cta gd-next">
+                {roles[ri + 1] ? <Button label={`다음: ${roles[ri + 1].name} 안내`} href={`#${roles[ri + 1].id}`} /> : null}
+                <Button label="지금 써 보기" variant="primary" href="/app" />
+              </div>
+            </div>
+          </section>
+        ))}
+
+        <section>
+          <div className="lp-wrap">
+            <div className="lp-head">
+              <p className="lp-eyebrow">자주 묻는 것</p>
+              <h2>막혔을 때</h2>
+            </div>
+            <div className="lp-grid3">
+              <div className="lp-card"><h3>에이전트가 멈췄어요</h3><p>"직접 입력으로 계속"을 누르면 손으로 적어 저장할 수 있습니다. 기록은 사라지지 않습니다.</p></div>
+              <div className="lp-card"><h3>잘못 올렸어요</h3><p>지출 목록에서 그 지출을 누르고 "수정"이나 "삭제"를 누르세요. 승인된 지출을 고치면 다시 승인받아야 합니다.</p></div>
+              <div className="lp-card"><h3>승인 버튼이 안 보여요</h3><p>함께 쓰는 단체 공간에서는 "승인하는 사람"으로 참여한 기기에만 승인 버튼이 있습니다. 자기가 올린 지출은 승인할 수 없습니다.</p></div>
+              <div className="lp-card"><h3>다른 사람 화면에 안 보여요</h3><p>지출 목록 아래의 "동기화"를 누르세요. 인터넷이 연결되어 있어야 합니다.</p></div>
+              <div className="lp-card"><h3>휴대폰을 바꿨어요</h3><p>기록은 기기에 저장됩니다. 설정의 "백업 내보내기"로 파일을 받아 두었다가 새 기기에서 "백업 가져오기"를 누르세요.</p></div>
+              <div className="lp-card"><h3>거래명세서가 PDF예요</h3><p>지금은 사진만 붙일 수 있습니다. 화면을 캡처한 그림으로 붙여 주세요.</p></div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer className="lp-footer">
+        <div className="lp-wrap">
+          <span>열린영수증 · GPL-3.0-or-later · 화면의 단체와 영수증은 가상 데이터입니다.</span>
+          <span><a href="/">소개</a> · <a href="/app">앱 열기</a> · <a href="/developers">개발자 안내</a></span>
+        </div>
+      </footer>
+    </div>
+  );
+}

@@ -72,15 +72,18 @@ export default function SponsorViewPage() {
             <Heading level={2}>8. 영수증</Heading>
             <ReceiptGallery
               key={cur.project}
-              items={cur.receipts.filter((r) => r.hasImage).map((r) => ({
-                id: r.id,
-                caption: `${r.date} · ${r.item} · ${won(r.amount)}`,
-                masked: async () => {
-                  const res = await fetch(`/api/sync/${ok.viewer.id}/img/${encodeURIComponent(r.id)}?kind=view`);
-                  if (!res.ok) return null;
-                  return decryptText(ok.viewer, (await res.json()).data);
-                },
-              }))}
+              items={cur.receipts.filter((r) => r.hasImage).flatMap((r) =>
+                // 한 지출에 붙은 사진을 모두 보여 준다. 예전에 올린 자료에는 photos가 없어 영수증 한 장으로 본다.
+                (r.photos ?? [{ key: r.id, label: "영수증" }]).map((p) => ({
+                  id: p.key,
+                  caption: `${r.date} · ${r.item} · ${won(r.amount)} · ${p.label}`,
+                  masked: async () => {
+                    const res = await fetch(`/api/sync/${ok.viewer.id}/img/${encodeURIComponent(p.key)}?kind=view`);
+                    if (!res.ok) return null;
+                    return decryptText(ok.viewer, (await res.json()).data);
+                  },
+                })),
+              )}
             />
             {cur.fingerprint ? <ProofCard key={cur.project} fingerprint={cur.fingerprint} ledger={ok.bundle.ledger} remember={`${ok.viewer.id}:${cur.project}`} /> : null}
             <HStack gap={2} className="noprint">

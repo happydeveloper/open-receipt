@@ -13,7 +13,7 @@
  * 함께 들어 있는 것: 단체 공간의 승인 규칙(approvalBlock), 변경 이력(addLog),
  * 같은 영수증일 수 있는 기록 찾기(findDuplicates).
  */
-import type { Expense, OpenItem, Status } from "./types";
+import type { Attachment, Expense, OpenItem, Status } from "./types";
 
 /** 빈 기록을 만든다. 넘긴 값으로 덮어쓰고, 상태는 내용에서 다시 계산한다. */
 export function newExpense(partial: Partial<Expense> = {}): Expense {
@@ -43,6 +43,8 @@ export function newExpense(partial: Partial<Expense> = {}): Expense {
 /** 증빙이 빠졌는지. 영수증은 사진이 있어야 하고, 대체 증빙은 사진이나 사유 중 하나가 있어야 한다. */
 export function evidenceMissing(e: Expense): boolean {
   const ev = e.evidence;
+  // 거래명세서 같은 자료가 붙어 있으면 증빙이 있는 것으로 본다 (온라인 구매는 종이 영수증이 없는 경우가 많다).
+  if ((ev.extra ?? []).some((a) => !!a.image)) return false;
   if (ev.kind === "receipt") return !ev.image;
   if (ev.kind === "alternative") return !ev.image && !(ev.reason ?? "").trim();
   return true;
@@ -116,6 +118,24 @@ export function reconfirmExpense(e: Expense, by: string, before: Expense | undef
 export function approveExpense(e: Expense, by: string, at: string = new Date().toISOString()): Expense {
   if (deriveStatus(e) !== "pending_approval") return e;
   return addLog(withStatus({ ...e, approvedBy: by, approvedAt: at }), by, "승인했습니다", at);
+}
+
+/**
+ * 같은 거래의 자료(거래명세서 등)를 이 지출에 붙인다. 지출 건수와 금액은 그대로다.
+ * 승인된 기록에 붙이면 승인이 풀리고 이력이 남는다 (승인자가 본 것과 달라졌으므로).
+ */
+export function attachEvidence(e: Expense, att: Attachment, by: string, at: string = new Date().toISOString()): Expense {
+  const next = withStatus({ ...e, evidence: { ...e.evidence, extra: [...(e.evidence.extra ?? []), att] }, approvedBy: undefined, approvedAt: undefined });
+  return e.approvedBy ? addLog(next, by, `증빙 자료(${att.label})를 붙여 승인이 풀렸습니다 (이전 승인: ${e.approvedBy})`, at) : next;
+}
+/** 붙였던 자료를 뗀다. 승인된 기록이면 승인이 풀린다. */
+export function detachEvidence(e: Expense, attachmentId: string, by: string, at: string = new Date().toISOString()): Expense {
+  const gone = (e.evidence.extra ?? []).find((a) => a.id === attachmentId);
+  if (!gone) return e;
+  const extra = (e.evidence.extra ?? []).filter((a) => a.id !== attachmentId);
+  const evidence = { ...e.evidence, extra: extra.length ? extra : undefined };
+  const next = withStatus({ ...e, evidence, approvedBy: undefined, approvedAt: undefined });
+  return e.approvedBy ? addLog(next, by, `증빙 자료(${gone.label})를 떼어 승인이 풀렸습니다 (이전 승인: ${e.approvedBy})`, at) : next;
 }
 
 export interface Actor {

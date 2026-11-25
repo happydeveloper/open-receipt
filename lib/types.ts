@@ -13,6 +13,16 @@ export type PaymentMethod = "org_card" | "transfer" | "personal" | "cash";
 export type Reimbursement = "needed" | "not_needed" | "unknown";
 export type Status = "draft" | "needs_evidence" | "pending_approval" | "done";
 
+/** 영수증과 함께 한 거래로 묶는 자료 한 장 (거래명세서, 주문내역, 이체확인증 …). */
+export interface Attachment {
+  id: string;
+  /** 자료 종류 */
+  label: string;
+  /** 가린 이미지(data URI) */
+  image?: string;
+  /** 원본 사진이 따로 보관되어 있는지 */
+  original?: boolean;
+}
 export interface Evidence {
   kind: "receipt" | "alternative" | "none";
   /** 가린 이미지(data URI). AI와 후원자에게는 이것만 보인다. */
@@ -21,6 +31,8 @@ export interface Evidence {
   original?: boolean;
   altType?: string;
   reason?: string;
+  /** 같은 거래의 다른 자료. 지출 건수와 금액은 늘지 않는다. */
+  extra?: Attachment[];
 }
 export interface Source {
   title: string;

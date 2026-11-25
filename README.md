@@ -7,6 +7,7 @@
 - 시연 영상: https://youtu.be/BgRsjSCLiHw
 - 모델과 검색: Liner Model API(도구 호출 + 이미지 입력), Liner Search API
 - 에이전트와 화면 사이의 통신: [AG-UI 프로토콜](https://docs.ag-ui.com/) 1.0
+- 사용 안내: https://open-receipt-six.vercel.app/guide (등록자·승인자·후원자가 화면을 보고 따라 하는 방법)
 - 개발자 안내: https://open-receipt-six.vercel.app/developers (다른 서비스에서 에이전트를 부르는 방법, 예제, 직접 실행)
 - 화면: Meta의 오픈소스 디자인 시스템 [Astryx](https://github.com/meta/astryx) (`@astryxdesign/core`, neutral 테마)
 
@@ -80,6 +81,7 @@ app/            화면과 API 경로 (Next.js App Router)
   page.tsx        소개 페이지 (/)
   app/page.tsx    앱 본체 (/app)
   r/, v/          공유받은 결산보고서, 후원자용 보기
+  guide/          사용 안내 (역할별 따라 하기)
   developers/     개발자 안내
   api/            에이전트(AG-UI), 단체 공간 동기화, 출시 알림
 lib/            규칙과 계산. 화면 없이 테스트할 수 있는 모듈
@@ -268,8 +270,8 @@ curl -N https://open-receipt-six.vercel.app/api/agent/expense \
 
 ```bash
 npm run typecheck   # 형식 검사
-npm test            # 단위 테스트 81개. AG-UI 왕복·이벤트 스키마 검증, 두 기기 동기화, 서명 원장, 공유 링크 등 (Liner는 모의)
-npm run test:e2e    # 브라우저 흐름 13개: 시연, 첫 방문, 보고서 공유, 두 기기 단체 공간, 후원자용 보기, 서명 원장 등 (에이전트 응답은 모의)
+npm test            # 단위 테스트 90개. 한 거래로 묶기, AG-UI 왕복·이벤트 스키마 검증, 두 기기 동기화, 서명 원장, 공유 링크 등 (Liner는 모의)
+npm run test:e2e    # 브라우저 흐름 15개: 시연, 사용 안내, 영수증과 거래명세서 묶기, 첫 방문, 보고서 공유, 두 기기 단체 공간, 후원자용 보기, 서명 원장 등 (에이전트 응답은 모의)
 npm run test:live   # 실제 Liner 호출로 전체 흐름. 개발 서버와 LINER_API_KEY, 크레딧 필요
 ```
 

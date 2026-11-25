@@ -5,6 +5,7 @@
  */
 import { evidenceLabel, sortByDate } from "./csv";
 import type { LedgerSummary } from "./ledger";
+import { hasPhoto, isPhoto, photosOf, slotsOf } from "./photos";
 import { buildReport, type Report } from "./report";
 import { buildShare } from "./share";
 import type { Expense } from "./types";
@@ -17,6 +18,8 @@ export interface ViewReceipt {
   evidence: string;
   /** 가린 사진이 있는지 */
   hasImage: boolean;
+  /** 이 지출에 붙은 사진 전부 (영수증과 함께 묶은 자료). key로 사진을 받는다. 예전 자료에는 없다. */
+  photos?: { key: string; label: string }[];
 }
 export interface ViewProject {
   project: string;
@@ -42,8 +45,8 @@ export interface ViewBundle {
   ledger?: LedgerSummary;
 }
 
-// 자리표시가 아닌 진짜 가린 사진이 있는지 (길이로 구분).
-const hasMasked = (e: Expense) => !!e.evidence.image && e.evidence.image.length > 200;
+// 사진이 붙은 자리. 이 기기가 아직 받지 못한 사진도 포함한다 (올린 기기가 이미 후원자용으로 올려 두었다).
+const photoSlots = (e: Expense) => slotsOf(e).filter((s) => hasPhoto(s.image));
 
 /** 후원자에게 보일 자료 묶음. 꺼져 있으면 "닫힘" 표시만 담는다. 이름 표시는 lib/share.ts의 가림 규칙을 그대로 쓴다. */
 export function buildViewBundle(expenses: Expense[], org: string, opts: { enabled: boolean; showNames: boolean }, now = new Date().toISOString(), proof?: ViewProof): ViewBundle {
@@ -62,15 +65,18 @@ export function buildViewBundle(expenses: Expense[], org: string, opts: { enable
         project,
         fingerprint: proof?.prints[project],
         report: shared.report,
-        receipts: list.map((e) => ({ id: e.id, date: e.date, item: e.item, amount: e.amount ?? 0, evidence: evidenceLabel(e), hasImage: hasMasked(e) })),
+        receipts: list.map((e) => {
+          const photos = photoSlots(e).map((s) => ({ key: s.key, label: s.label }));
+          return { id: e.id, date: e.date, item: e.item, amount: e.amount ?? 0, evidence: evidenceLabel(e), hasImage: photos.length > 0, photos };
+        }),
       };
     }),
   };
 }
 
-/** 후원자용으로 올릴 가린 사진 (기록 id → 사진). */
+/** 후원자용으로 올릴 가린 사진 (사진 이름 → 사진). 영수증과 함께 묶은 자료를 모두 담는다. */
 export function viewImages(expenses: Expense[]): Map<string, string> {
   const m = new Map<string, string>();
-  for (const e of expenses) if (e.project && hasMasked(e)) m.set(e.id, e.evidence.image!);
+  for (const e of expenses) if (e.project) for (const p of photosOf(e)) if (isPhoto(p.image)) m.set(p.key, p.image);
   return m;
 }

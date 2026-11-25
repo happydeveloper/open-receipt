@@ -46,6 +46,7 @@
 | `/app` | `app/app/page.tsx` | 앱 본체. 화면 여덟 개(소개, 목록, 지출 추가, 여러 장 올리기, 검토, 결산보고서, 기록 상세, 설정)가 이 파일 하나에 있습니다. 파일 머리에 구성이 적혀 있습니다 |
 | `/r#…` | `app/r/page.tsx` | 공유받은 결산보고서 (읽기 전용) |
 | `/v#…` | `app/v/page.tsx` | 후원자용 보기 (읽기 전용) |
+| `/guide` | `app/guide/page.tsx` | 역할별 사용 안내. 화면 사진은 `e2e/guide-shots.spec.ts`가 만든다 |
 | `/developers` | `app/developers/page.tsx` | 에이전트를 다른 서비스에서 부르는 방법 |
 | | `app/report-view.tsx`, `app/receipts.tsx` | 결산보고서 본문, 지문 카드, 영수증 목록. 위의 세 화면이 함께 씁니다 |
 
@@ -74,6 +75,7 @@
 | `status.ts` | 상태 계산, 확정, 승인, 승인 규칙, 중복 찾기. **가장 먼저 읽을 파일** |
 | `flow.ts` | 사람이 넣은 값과 AI가 채운 값을 구분해 합치는 규칙 |
 | `storage.ts`, `originals.ts`, `settings.ts` | 기기 저장 (기록, 사진, 설정과 백업) |
+| `photos.ts` | 한 지출에 붙은 사진들(영수증과 함께 묶은 거래명세서 등)의 이름과 순회. 저장, 동기화, 후원자용 보기, 보고서가 함께 쓴다 |
 | `seed.ts` | 가상 데모 데이터 |
 
 **에이전트**

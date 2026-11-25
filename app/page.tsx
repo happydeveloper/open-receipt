@@ -74,6 +74,7 @@ export default function Landing() {
           <span className="lp-brand"><img src="/icon-192.png" alt="" />열린영수증</span>
           <nav className="lp-nav-links">
             <span className="lp-hide-sm"><Button label="어떻게 쓰나요" variant="ghost" size="sm" href="#how" /></span>
+            <Button label="사용 안내" variant="ghost" size="sm" href="/guide" />
             <span className="lp-hide-sm"><Button label="기술" variant="ghost" size="sm" href="#tech" /></span>
             <Button label="출시 알림" variant="ghost" size="sm" href="#waitlist" />
             <Button label="지금 써 보기" variant="primary" size="sm" href="/app" />
@@ -90,6 +91,7 @@ export default function Landing() {
               <p className="lp-lead">열린영수증은 회계 담당자가 따로 없는 단체·동아리·모임의 행사 정산과 월말·연말 보고를 돕습니다. AI 에이전트가 영수증을 읽어 기록을 채우고, 결산보고서까지 만들어 둡니다.</p>
               <div className="lp-cta">
                 <Button label="지금 써 보기" variant="primary" size="lg" href="/app" />
+                <Button label="사용 안내 보기" size="lg" href="/guide" />
                 <Button label="출시 알림 받기" size="lg" href="#waitlist" />
               </div>
               <p className="lp-note">설치나 가입 없이 바로 열립니다. 가상 데이터로 먼저 둘러볼 수 있고, 지금은 정식 출시 전 시험 버전입니다.</p>
@@ -170,6 +172,12 @@ export default function Landing() {
                   <tr><th>후원자</th><td>결산보고서와 가린 영수증</td><td>보기와 인쇄. 원본을 볼 수 없고 아무것도 고칠 수 없습니다</td></tr>
                 </tbody>
               </table>
+            </div>
+            <p className="lp-sub" style={{ marginTop: "var(--spacing-6)" }}>역할마다 무엇을 누르면 되는지, 화면을 보며 따라 할 수 있는 안내를 준비했습니다.</p>
+            <div className="lp-cta" style={{ marginTop: "var(--spacing-3)" }}>
+              <Button label="등록자 안내" href="/guide#submitter" />
+              <Button label="승인자 안내" href="/guide#approver" />
+              <Button label="후원자 안내" href="/guide#sponsor" />
             </div>
           </div>
         </section>
@@ -294,7 +302,7 @@ export default function Landing() {
       <footer className="lp-footer">
         <div className="lp-wrap">
           <span>열린영수증 · GPL-3.0-or-later · 화면의 단체와 영수증은 가상 데이터입니다.</span>
-          <span><a href="/app">앱 열기</a> · <a href="/developers">개발자 안내</a>{SOURCE_URL ? <> · <a href={SOURCE_URL} target="_blank" rel="noreferrer">소스 코드</a></> : null}</span>
+          <span><a href="/app">앱 열기</a> · <a href="/guide">사용 안내</a> · <a href="/developers">개발자 안내</a>{SOURCE_URL ? <> · <a href={SOURCE_URL} target="_blank" rel="noreferrer">소스 코드</a></> : null}</span>
         </div>
       </footer>
     </div>

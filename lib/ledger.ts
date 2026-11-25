@@ -84,7 +84,9 @@ export function recordBody(e: Expense) {
   return {
     id: e.id, date: e.date, item: e.item, amount: e.amount, merchant: e.merchant, purpose: e.purpose,
     project: e.project, budgetCategory: e.budgetCategory, paymentMethod: e.paymentMethod, payer: e.payer,
-    reimbursement: e.reimbursement, evidence: { kind: e.evidence.kind, altType: e.evidence.altType ?? "", reason: e.evidence.reason ?? "" },
+    reimbursement: e.reimbursement,
+    // 함께 묶은 자료는 있을 때만 넣는다 (자료가 없는 예전 기록의 서명이 그대로 맞도록).
+    evidence: { kind: e.evidence.kind, altType: e.evidence.altType ?? "", reason: e.evidence.reason ?? "", ...(e.evidence.extra?.length ? { extra: e.evidence.extra.map((a) => ({ id: a.id, label: a.label })) } : {}) },
     confirmed: e.confirmed, submittedBy: e.submittedBy, approvedBy: e.approvedBy ?? "", approvedAt: e.approvedAt ?? "",
   };
 }

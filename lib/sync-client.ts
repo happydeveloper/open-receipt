@@ -5,6 +5,7 @@
  */
 import { mergeLedgers, recordsFingerprint, summarize, type Ledger, type Problem } from "./ledger";
 import type { ImageBag } from "./originals";
+import { photosOf, slotsOf } from "./photos";
 import { buildViewBundle, viewImages } from "./sponsor-view";
 import { decryptText, encryptText, viewerWorkspace, writeToken, type Workspace } from "./sync-crypto";
 import { IMAGE_REF, imagesOf, mergeExpenses, restoreImages, stripImages, type SharedSettings, type SyncDoc, type Tombstones } from "./sync-merge";
@@ -78,39 +79,39 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
     // 이미지: 아직 안 올린 것은 올리고, 이 기기에 없는 것은 받는다.
     const uploaded = new Set(local.uploaded);
     let expenses = merged.expenses;
-    for (const e of expenses) {
-      const img = e.evidence.image;
-      if (!img || img.length <= 200 || img === IMAGE_REF || uploaded.has(mark(e.id, img))) continue;
-      const res = await api.putImage(ws.id, e.id, token, { data: await encryptText(ws, img) });
-      if (res.status === 200) uploaded.add(mark(e.id, img));
+    // 영수증과 함께 묶은 자료(거래명세서 등)를 사진 이름별로 하나씩 다룬다.
+    for (const p of expenses.flatMap(photosOf)) {
+      if (uploaded.has(mark(p.key, p.image))) continue;
+      const res = await api.putImage(ws.id, p.key, token, { data: await encryptText(ws, p.image) });
+      if (res.status === 200) uploaded.add(mark(p.key, p.image));
     }
     let missingImages = 0;
     const fetched = new Map<string, string>();
-    for (const e of expenses) {
-      if (e.evidence.image !== IMAGE_REF) continue;
-      const res = await api.getImage(ws.id, e.id);
+    for (const s of expenses.flatMap(slotsOf)) {
+      if (s.image !== IMAGE_REF) continue;
+      const res = await api.getImage(ws.id, s.key);
       const img = res.status === 200 ? await decryptText(ws, res.body.data) : null;
       if (img) {
-        fetched.set(e.id, img);
-        uploaded.add(mark(e.id, img));
+        fetched.set(s.key, img);
+        uploaded.add(mark(s.key, img));
       } else missingImages++;
     }
     if (fetched.size) expenses = restoreImages(expenses, fetched);
 
     // 원본 사진: 구성원 열쇠로 암호화해 구성원끼리만 주고받는다.
     if (originals) {
-      for (const e of expenses) {
-        if (!e.evidence.original) continue;
-        const have = await originals.get(e.id);
-        if (have && !uploaded.has(`o:${e.id}`)) {
-          const res = await api.putImage(ws.id, e.id, token, { data: await encryptText(ws, have) }, "orig");
-          if (res.status === 200) uploaded.add(`o:${e.id}`);
+      for (const s of expenses.flatMap(slotsOf)) {
+        if (!s.original) continue;
+        const have = await originals.get(s.key);
+        if (have && !uploaded.has(`o:${s.key}`)) {
+          const res = await api.putImage(ws.id, s.key, token, { data: await encryptText(ws, have) }, "orig");
+          if (res.status === 200) uploaded.add(`o:${s.key}`);
         } else if (!have) {
-          const res = await api.getImage(ws.id, e.id, "orig");
+          const res = await api.getImage(ws.id, s.key, "orig");
           const img = res.status === 200 ? await decryptText(ws, res.body.data) : null;
           if (img) {
-            await originals.put(e.id, img);
-            uploaded.add(`o:${e.id}`);
+            await originals.put(s.key, img);
+            uploaded.add(`o:${s.key}`);
           }
         }
       }
@@ -132,13 +133,16 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
         for (const u of [...uploaded]) if (u.startsWith("view:")) uploaded.delete(u);
         uploaded.add(bundleSig);
       }
-      if (viewOn) {
-        for (const [id, img] of viewImages(expenses)) {
-          const m = `v:${id}:${img.length}`;
-          if (uploaded.has(m)) continue;
-          const up = await api.putImage(ws.id, id, token, { data: await encryptText(viewer, img) }, "view");
-          if (up.status === 200) uploaded.add(m);
-        }
+    }
+    // 후원자용 사진은 보고서 묶음과 따로 챙긴다. 보고서가 그대로여도, 지난번에 올리지 못한 사진이나
+    // 바꿔 붙인 사진은 이번에 올린다 (예전에는 보고서가 바뀔 때만 올려서 사진이 빠진 채 남을 수 있었다).
+    if (viewOn) {
+      const viewer = await viewerWorkspace(ws);
+      for (const [key, img] of viewImages(expenses)) {
+        const m = `v:${key}:${img.length}`;
+        if (uploaded.has(m)) continue;
+        const up = await api.putImage(ws.id, key, token, { data: await encryptText(viewer, img) }, "view");
+        if (up.status === 200) uploaded.add(m);
       }
     }
 

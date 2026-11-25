@@ -6,6 +6,7 @@
  * 따로 두고, 목록에는 LOCAL_IMAGE 표시만 남긴다. 불러올 때 hydrateImages로 사진을 다시 채운다.
  * 저장소를 KV, ImageStore 인터페이스로 받아서 테스트에서는 메모리 구현을 쓴다.
  */
+import { isPhoto, mapPhotos, slotsOf } from "./photos";
 import { seedExpenses } from "./seed";
 import { withStatus } from "./status";
 import type { Expense } from "./types";
@@ -23,8 +24,6 @@ export interface ImageStore {
   get(id: string): Promise<string | null>;
   put(id: string, data: string): Promise<void>;
 }
-// 자리표시(LOCAL_IMAGE, 1x1 그림)와 진짜 사진을 길이로 구분한다.
-const isPhoto = (v?: string) => !!v && v.length > 200;
 
 /** 저장된 기록 목록. 없거나 깨졌으면 null. 상태는 읽을 때 다시 계산한다. */
 export function loadExpenses(kv: KV): Expense[] | null {
@@ -44,11 +43,14 @@ export function loadExpenses(kv: KV): Expense[] | null {
 export function saveExpenses(kv: KV, list: Expense[], photos?: ImageStore): boolean {
   try {
     const slim = photos
-      ? list.map((e) => {
-          if (!isPhoto(e.evidence.image)) return e;
-          void photos.put(e.id, e.evidence.image!);
-          return { ...e, evidence: { ...e.evidence, image: LOCAL_IMAGE } };
-        })
+      ? list.map((e) =>
+          // 영수증과 함께 묶은 자료를 모두 보관함으로 옮긴다.
+          mapPhotos(e, (img, key) => {
+            if (!isPhoto(img)) return img;
+            void photos.put(key, img);
+            return LOCAL_IMAGE;
+          }),
+        )
       : list;
     kv.setItem(STORAGE_KEY, JSON.stringify(slim));
     return true;
@@ -58,13 +60,13 @@ export function saveExpenses(kv: KV, list: Expense[], photos?: ImageStore): bool
 }
 /** 불러온 목록의 사진 표시를 보관함의 실제 사진으로 되돌린다. */
 export async function hydrateImages(list: Expense[], photos: ImageStore): Promise<Expense[]> {
-  return Promise.all(
-    list.map(async (e) => {
-      if (e.evidence.image !== LOCAL_IMAGE) return e;
-      const img = await photos.get(e.id);
-      return img ? { ...e, evidence: { ...e.evidence, image: img } } : e;
-    }),
-  );
+  const got = new Map<string, string>();
+  const keys = list.flatMap((e) => slotsOf(e).filter((s) => s.image === LOCAL_IMAGE).map((s) => s.key));
+  await Promise.all(keys.map(async (k) => {
+    const img = await photos.get(k);
+    if (img) got.set(k, img);
+  }));
+  return list.map((e) => mapPhotos(e, (img, key) => (img === LOCAL_IMAGE && got.has(key) ? got.get(key) : img)));
 }
 export function resetToSeed(kv: KV): Expense[] {
   const seed = seedExpenses();

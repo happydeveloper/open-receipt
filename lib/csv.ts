@@ -15,9 +15,11 @@ const cell = (v: unknown) => {
 };
 /** 증빙 칸에 쓰는 문구. CSV와 결산보고서가 함께 쓴다. */
 export function evidenceLabel(e: Expense): string {
-  if (e.evidence.kind === "receipt") return e.evidence.image ? "영수증 첨부" : "영수증 미첨부";
-  if (e.evidence.kind === "alternative") return `대체 증빙(${e.evidence.altType || "사유서"})`;
-  return "없음";
+  const base = e.evidence.kind === "receipt" ? (e.evidence.image ? "영수증 첨부" : "영수증 미첨부") : e.evidence.kind === "alternative" ? `대체 증빙(${e.evidence.altType || "사유서"})` : "없음";
+  // 함께 묶은 자료(거래명세서 등)가 있으면 종류를 덧붙인다.
+  const extra = (e.evidence.extra ?? []).map((a) => a.label).join(", ");
+  if (!extra) return base;
+  return base === "없음" || base === "영수증 미첨부" ? `${extra} 첨부` : `${base} + ${extra}`;
 }
 export function totalAmount(list: Expense[]): number {
   return list.reduce((s, e) => s + (e.amount ?? 0), 0);

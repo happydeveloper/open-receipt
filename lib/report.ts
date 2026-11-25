@@ -6,6 +6,7 @@
  * 보고서는 판정을 담지 않는다. 합계와 분류, 그리고 사람이 "확인할 항목"만 담는다.
  */
 import { evidenceLabel, sortByDate, totalAmount } from "./csv";
+import { photosOf } from "./photos";
 import { openItems } from "./status";
 import { PAYMENT_LABEL, STATUS_LABEL, type Expense, type Status } from "./types";
 
@@ -104,11 +105,36 @@ export function buildReport(all: Expense[], project: string, generatedAt = new D
 }
 
 export const won = (n: number) => `${n.toLocaleString("ko-KR")}원`;
+
+/** 보고서에 싣는 증빙 사진 한 장. */
+export interface ReportPhoto {
+  /** 사진 이름 (lib/photos.ts) */
+  key: string;
+  expenseId: string;
+  /** 어느 지출의 사진인지: 날짜 · 항목 · 금액 */
+  caption: string;
+  /** 사진 종류: 영수증, 거래명세서 … */
+  label: string;
+  image: string;
+  original: boolean;
+}
+/** 이 사업의 증빙 사진 전부. 지출 날짜순이고, 한 지출의 사진은 영수증부터 차례로 이어진다. */
+export function reportPhotos(all: Expense[], project: string): ReportPhoto[] {
+  return sortByDate(all.filter((e) => e.project === project)).flatMap((e) =>
+    photosOf(e).map((p) => ({ key: p.key, expenseId: e.id, caption: `${e.date || "날짜 없음"} · ${e.item || "항목 미입력"} · ${won(e.amount ?? 0)}`, label: p.label, image: p.image, original: p.original })),
+  );
+}
 const esc = (s: unknown) =>
   String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
-/** 내려받기용 단독 HTML 문서. */
-export function reportToHtml(r: Report): string {
+/** 내려받기용 단독 HTML 문서. photos를 주면 "8. 증빙 사진"에 지출별로 묶어 싣는다 (사진은 파일 안에 들어간다). */
+export function reportToHtml(r: Report, photos: ReportPhoto[] = []): string {
+  // 같은 지출의 사진을 한 묶음으로 모은다.
+  const groups = new Map<string, ReportPhoto[]>();
+  for (const p of photos) groups.set(p.expenseId, [...(groups.get(p.expenseId) ?? []), p]);
+  const gallery = [...groups.values()]
+    .map((g) => `<section class="ev"><h3>${esc(g[0].caption)}</h3><div class="shots">${g.map((p) => `<figure><img src="${esc(p.image)}" alt="${esc(`${g[0].caption} ${p.label}`)}"><figcaption>${esc(p.label)}</figcaption></figure>`).join("")}</div></section>`)
+    .join("\n");
   const table = (head: string[], rows: (string | number)[][], numCols: number[] = []) =>
     `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows
       .map((row) => `<tr>${row.map((c, i) => `<td${numCols.includes(i) ? ' class="n"' : ""}>${esc(c)}</td>`).join("")}</tr>`)
@@ -118,7 +144,9 @@ export function reportToHtml(r: Report): string {
 h1{font-size:24px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 8px;border-bottom:2px solid #1c2430;padding-bottom:4px}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{border:1px solid #b9c2cf;padding:6px 8px;text-align:left;vertical-align:top}
 th{background:#eef1f5}.n{text-align:right;white-space:nowrap}.meta{color:#5d6878;font-size:13px}.sign{display:flex;gap:24px;margin-top:32px}
-.sign div{flex:1;border-top:1px solid #1c2430;padding-top:6px;font-size:13px}.note{font-size:12px;color:#5d6878;margin-top:24px}</style></head><body>
+.sign div{flex:1;border-top:1px solid #1c2430;padding-top:6px;font-size:13px}.note{font-size:12px;color:#5d6878;margin-top:24px}
+.ev{margin:16px 0;break-inside:avoid}.ev h3{font-size:14px;margin:0 0 6px}.shots{display:flex;flex-wrap:wrap;gap:12px}
+figure{margin:0;width:calc(50% - 6px);break-inside:avoid}figure img{width:100%;border:1px solid #b9c2cf}figcaption{font-size:12px;color:#5d6878}</style></head><body>
 <h1>${esc(r.project)} 결산보고서 초안</h1>
 <p class="meta">지출 기간 ${esc(r.period)} · 작성 ${esc(r.generatedAt.slice(0, 10))} · 열린영수증</p>
 <h2>1. 요약</h2>
@@ -135,6 +163,9 @@ ${r.openItems.length ? table(["항목", "금액", "다음 행동"], r.openItems.
 ${r.reimbursements.length ? table(["결제자", "항목", "금액", "승인"], r.reimbursements.map((x) => [x.payer, x.item, won(x.amount), x.approved ? "승인 완료" : "승인 전"]), [2]) : "<p>환급 대상이 없습니다.</p>"}
 <h2>7. 참고한 공개 지침</h2>
 ${r.sources.length ? `<ul>${r.sources.map((s) => `<li><a href="${esc(s.url)}">${esc(s.title)}</a> (${esc(s.date ?? "날짜 미상")}, 검색 ${esc(s.searchedAt.slice(0, 10))})</li>`).join("")}</ul>` : "<p>연결된 출처가 없습니다.</p>"}
+<h2>8. 증빙 사진</h2>
+${gallery || "<p>첨부된 증빙 사진이 없습니다.</p>"}
+${gallery ? '<p class="meta">개인정보를 가린 사진입니다. 한 지출에 붙은 자료(영수증, 거래명세서 등)를 함께 묶어 실었습니다.</p>' : ""}
 <div class="sign"><div>작성자 (총무·재정 담당)</div><div>확인자 (대표·승인자)</div></div>
 <p class="note">이 문서는 초안입니다. AI가 도운 내용이 포함되어 있으며, 지출의 적정성 판단과 최종 승인·제출은 조직의 담당자가 합니다. 시연 데이터는 모두 가상입니다.</p>
 </body></html>`;

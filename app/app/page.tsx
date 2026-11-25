@@ -3,6 +3,7 @@
  * 앱 본체 (/app). 화면 하나에서 view 값으로 여덟 화면을 바꿔 보여 준다.
  *
  *   intro 첫 방문 소개·단체 공간 참여   list 목록          add 지출 추가(사진 → 가림 → 에이전트 → 확정)
+ *   (add 화면의 attach 단계: 이미 있는 지출에 거래명세서 같은 자료를 붙여 한 거래로 묶는다)
  *   bulk  영수증 여러 장 올리기          review 검토·마감   report 결산보고서   detail 기록 상세   settings 설정
  *
  * 이 파일의 구성 (위에서부터):
@@ -43,7 +44,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toCsv, totalAmount, sortByDate, evidenceLabel } from "@/lib/csv";
 import { applyAgentRecord, editField, fallbackSummary, lockedFields, recordValues } from "@/lib/flow";
 import { fitWithin, maskText, type Box } from "@/lib/mask";
-import { buildReport, reportToHtml, won } from "@/lib/report";
+import { ATTACH_LABELS, newAttachmentId, photoKey, slotsOf } from "@/lib/photos";
+import { buildReport, reportPhotos, reportToHtml, won } from "@/lib/report";
 import { ReceiptGallery } from "../receipts";
 import { ReportBody } from "../report-view";
 import { DEMO_PROJECT } from "@/lib/seed";
@@ -54,13 +56,13 @@ import { EMPTY_META, httpApi, loadMeta, saveMeta, SYNC_KEY, syncNow, type SyncMe
 import { deviceMasked, deviceOriginals } from "@/lib/originals";
 import { inviteCode, newWorkspace, parseInvite, viewCode, viewerWorkspace, type Workspace } from "@/lib/sync-crypto";
 import { touchChanged } from "@/lib/sync-merge";
-import { approvalBlock, approveExpense, confirmExpense, duplicateIds, evidenceMissing, findDuplicates, missingFields, needsAttention, newExpense, openItems, reconfirmExpense, withStatus, type Actor } from "@/lib/status";
+import { approvalBlock, approveExpense, attachEvidence, confirmExpense, detachEvidence, duplicateIds, evidenceMissing, findDuplicates, missingFields, needsAttention, newExpense, openItems, reconfirmExpense, withStatus, type Actor } from "@/lib/status";
 import { hydrateImages, loadExpenses, resetToSeed, saveExpenses, STORAGE_KEY } from "@/lib/storage";
 import { PAYMENT_LABEL, STATUS_LABEL, type ChecklistItem, type Expense, type PaymentMethod, type Source, type Status } from "@/lib/types";
 
 type View = "intro" | "list" | "add" | "bulk" | "review" | "report" | "detail" | "settings";
 interface BulkItem { id: string; name: string; raw: string; boxes: Box[]; state: "ready" | "running" | "done" | "error"; note: string }
-type Step = "upload" | "alt" | "mask" | "agent" | "edit" | "saved";
+type Step = "upload" | "alt" | "mask" | "agent" | "edit" | "saved" | "attach";
 type Phase = "idle" | "running" | "ask" | "done" | "error";
 interface AgentStep { tool: string; label: string; detail?: string }
 interface AgentQuestion { field: string; text: string }
@@ -70,6 +72,7 @@ const MANUAL = "직접 입력으로 계속할 수 있습니다.";
 const STATUS_COLOR: Record<Status, "green" | "orange" | "purple" | "gray"> = { done: "green", needs_evidence: "orange", pending_approval: "purple", draft: "gray" };
 const PAY_OPTIONS = (Object.keys(PAYMENT_LABEL) as PaymentMethod[]).map((p) => ({ value: p, label: PAYMENT_LABEL[p] }));
 const ALT_OPTIONS = ["이체확인증", "거래명세서", "사유서", "기타"].map((v) => ({ value: v, label: v }));
+const ATTACH_OPTIONS = ATTACH_LABELS.map((v) => ({ value: v, label: v }));
 
 const ASK_USER_TOOL = {
   name: "ask_user",
@@ -277,6 +280,8 @@ export default function Home() {
   const [editing, setEditing] = useState(false);
   const [memo, setMemo] = useState("");
   const [raw, setRaw] = useState<string | null>(null);
+  // 지출에 함께 묶을 자료의 종류 (attach 단계)
+  const [attLabel, setAttLabel] = useState(ATTACH_LABELS[0]);
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
@@ -441,6 +446,33 @@ export default function Home() {
   function startFix(e: Expense) {
     setCur(e); setEditing(true); setErr("");
     setStep("alt"); go("add");
+  }
+  /** 이미 있는 지출에 거래명세서 같은 자료를 붙이는 화면을 연다. */
+  function startAttach(e: Expense) {
+    setCur(e); setEditing(true); setRaw(null); setBoxes([]); setErr(""); setAttLabel(ATTACH_LABELS[0]);
+    setStep("attach"); go("add");
+  }
+  /** 고른 사진을 가려서 이 지출에 붙인다. 새 지출을 만들지 않으므로 건수와 금액은 그대로다. */
+  async function saveAttach() {
+    if (!raw) return;
+    try {
+      const before = list.find((x) => x.id === cur.id);
+      if (!before) throw new Error("먼저 지출을 저장한 뒤에 자료를 붙일 수 있습니다.");
+      const id = newAttachmentId();
+      const image = await makeMaskedImage(raw, boxes);
+      // 원본은 영수증과 같이 이 기기의 보관함에만 둔다.
+      await deviceOriginals.put(photoKey(before.id, id), await makeMaskedImage(raw, []));
+      const e = attachEvidence(before, { id, label: attLabel, image, original: true }, SUBMITTER);
+      persist(list.map((x) => (x.id === e.id ? e : x)));
+      resetClose(); setCur(e); setRaw(null); setBoxes([]);
+      go("detail"); setToast(`${attLabel} 자료를 이 지출에 붙였습니다.${before.approvedBy ? " 승인이 풀렸으니 다시 승인받아 주세요." : ""}`);
+    } catch (e: any) { setErr(e.message || "자료를 붙이지 못했습니다."); }
+  }
+  function removeAttachment(e: Expense, attachmentId: string) {
+    const next = detachEvidence(e, attachmentId, SUBMITTER);
+    persist(list.map((x) => (x.id === e.id ? next : x)));
+    deviceOriginals.del(photoKey(e.id, attachmentId));
+    resetClose(); setCur(next); setToast("자료를 뗐습니다.");
   }
   async function pick(file: File | undefined) {
     if (!file) return;
@@ -623,6 +655,7 @@ export default function Home() {
     // 다른 기기에서 되살아나지 않도록 삭제 기록을 남긴다.
     if (live.current.meta.ws) keepMeta({ ...live.current.meta, tombstones: { ...live.current.meta.tombstones, [e.id]: new Date().toISOString() } });
     persist(list.filter((x) => x.id !== e.id));
+    for (const s of slotsOf(e)) deviceOriginals.del(s.key);
     deviceOriginals.del(e.id);
     resetClose(); go("list"); setToast(`${e.item || "기록"} 건을 삭제했습니다.`);
   }
@@ -721,13 +754,13 @@ export default function Home() {
   }
   const draftsReady = mine.filter((e) => e.status === "draft" && !e.confirmed && missingFields(e).length === 0).length;
 
-  /** 등록자·승인자가 보는 영수증: 가린 사진과, 있으면 원본. */
+  /** 등록자·승인자가 보는 증빙 사진: 가린 사진과, 있으면 원본. 한 지출의 영수증과 함께 묶은 자료가 차례로 나온다. */
   const receiptItems = (items: Expense[]) =>
-    items.filter((e) => e.evidence.image && e.evidence.image.length > 200).map((e) => ({
-      id: e.id,
-      caption: `${e.date || "날짜 없음"} · ${e.item || "항목 미입력"} · ${won(e.amount ?? 0)}`,
-      masked: e.evidence.image!,
-      loadOriginal: e.evidence.original ? () => deviceOriginals.get(e.id) : undefined,
+    items.flatMap((e) => reportPhotos([e], e.project)).map((p) => ({
+      id: p.key,
+      caption: `${p.caption} · ${p.label}`,
+      masked: p.image,
+      loadOriginal: p.original ? () => deviceOriginals.get(p.key) : undefined,
     }));
 
   if (!ready) return <Frame title="열린영수증"><Note>불러오는 중…</Note></Frame>;
@@ -976,6 +1009,7 @@ export default function Home() {
     else rows.push(["서명", !au ? "확인하는 중" : au.signed ? dev(au.signer) : "지금 내용에 서명한 기기가 없습니다"]);
     return (
       <Frame title="지출 상세" side={STATUS_LABEL[e.status]}>
+        {toast ? <Banner status="success" title={toast} /> : null}
         {e.summary ? <Text>{e.summary}</Text> : null}
         <Card padding={3} data-testid="detail">
           <List hasDividers edge="flush" density="compact">
@@ -986,6 +1020,18 @@ export default function Home() {
         {dupBanner(e)}
         {meta.ws && au?.approval && !au.approval.ok ? <Banner status="warning" title="승인 서명을 확인할 수 없습니다" description={`${au.approval.text}. 승인자가 자기 기기에서 다시 승인하면 해결됩니다.`} data-testid="approval-audit" /> : null}
         {receiptItems([e]).length ? <ReceiptGallery items={receiptItems([e])} /> : null}
+        <Card data-testid="attachments">
+          <VStack gap={2}>
+            <Heading level={3}>함께 묶은 자료</Heading>
+            <Note>거래명세서, 주문내역, 이체확인증처럼 이 지출과 한 거래인 자료를 붙입니다. 지출 건수와 금액은 늘지 않습니다.</Note>
+            {e.evidence.extra?.length ? (
+              <List hasDividers edge="flush" density="compact">
+                {e.evidence.extra.map((a) => <ListItem key={a.id} label={<Text>{a.label}</Text>} endContent={<Button label="떼기" tooltip={`${a.label} 떼기`} size="sm" variant="ghost" onClick={() => removeAttachment(e, a.id)} />} />)}
+              </List>
+            ) : null}
+            <Sub label="자료 붙이기" onClick={() => startAttach(e)} />
+          </VStack>
+        </Card>
         {e.guidance?.checklist.length ? (
           <Card>
             <VStack gap={2}>
@@ -1015,7 +1061,7 @@ export default function Home() {
           ? <HStack gap={2}><Button label="삭제 확인" variant="destructive" width="100%" onClick={() => removeExpense(e)} /><Sub label="취소" onClick={() => setConfirmDelete(false)} /></HStack>
           : <Sub label="삭제" onClick={() => setConfirmDelete(true)} />}
         <Sub label="지출 목록으로" onClick={() => go("list")} />
-        {e.status === "done" ? <Note>완료된 기록을 수정하면 다시 승인받아야 합니다.</Note> : null}
+        {e.status === "done" ? <Note>완료된 기록을 수정하거나 자료를 붙이고 떼면 다시 승인받아야 합니다.</Note> : null}
       </Frame>
     );
   }
@@ -1130,7 +1176,7 @@ export default function Home() {
         {r.openItems.length > 0 ? <VStack className="noprint"><Banner status="warning" title={`확인할 항목이 ${r.openItems.length}건 남아 있습니다.`} description="그대로 내보낼 수 있지만 보고서에 표시됩니다." /></VStack> : null}
         <ReportBody r={r} />
         <Heading level={2}>8. 영수증</Heading>
-        <Note>가린 사진은 AI와 후원자에게 보이는 사진입니다. 원본은 등록자와 승인자만 볼 수 있습니다.</Note>
+        <Note>가린 사진은 AI와 후원자에게 보이는 사진입니다. 원본은 등록자와 승인자만 볼 수 있습니다. 내려받는 보고서 파일에는 가린 사진이 함께 들어갑니다.</Note>
         <ReceiptGallery key={project} items={receiptItems(mine)} />
         <Heading level={2}>9. 변조 확인용 지문</Heading>
         <Card padding={3} data-testid="proof">
@@ -1143,7 +1189,7 @@ export default function Home() {
         <Note>보고서 지문은 이 사업의 기록이 하나라도 바뀌면 달라집니다. 보고서를 보낼 때 지문을 함께 알려 두면, 받은 분이 나중에 같은 지문인지 견줘 볼 수 있습니다.</Note>
         <HStack gap={2} className="noprint">
           <Main label="CSV 내려받기" onClick={() => download(`${project}_지출내역.csv`, toCsv(mine), "text/csv;charset=utf-8")} />
-          <Sub label="보고서 내려받기" onClick={() => download(`${project}_결산보고서_초안.html`, reportToHtml(r), "text/html;charset=utf-8")} />
+          <Sub label="보고서 내려받기" onClick={() => download(`${project}_결산보고서_초안.html`, reportToHtml(r, reportPhotos(list, project)), "text/html;charset=utf-8")} />
         </HStack>
         <VStack className="noprint">
           <Card>
@@ -1168,6 +1214,11 @@ export default function Home() {
                 </HStack>
               </> : null}
               {share.note ? <Note>{share.note}</Note> : null}
+              {meta.ws && settings.sponsorView && viewerLink ? <>
+                <TextInput id="report-viewer-link" label="영수증 사진까지 보이는 링크 (후원자용 보기)" isReadOnly value={viewerLink} onChange={() => {}}
+                  description="결산보고서와 가린 영수증·거래명세서 사진을 함께 보여 줍니다. 원본과 이름은 보이지 않습니다." />
+                <Sub label="후원자용 링크 복사" onClick={() => { navigator.clipboard?.writeText(viewerLink).then(() => setShare((sh) => ({ ...sh, note: "후원자용 보기 링크를 복사했습니다." })), () => {}); }} />
+              </> : null}
             </VStack>
           </Card>
         </VStack>
@@ -1181,7 +1232,7 @@ export default function Home() {
   }
 
   /* ---------- 지출 추가 ---------- */
-  const title: Record<Step, string> = { upload: "지출 추가", alt: "대체 증빙", mask: "가릴 부분 확인", agent: phase === "done" ? "증빙 묶음" : "에이전트가 정리 중", edit: "직접 입력", saved: "저장 완료" };
+  const title: Record<Step, string> = { upload: "지출 추가", alt: "대체 증빙", mask: "가릴 부분 확인", agent: phase === "done" ? "증빙 묶음" : "에이전트가 정리 중", edit: "직접 입력", saved: "저장 완료", attach: "자료 붙이기" };
   const ai = (k: string) => (cur.aiDrafted.includes(k) ? "AI가 채운 초안입니다. 틀리면 고쳐 주세요." : undefined);
   const text = (k: "date" | "merchant" | "item" | "purpose" | "project" | "budgetCategory" | "payer", label: string, placeholder = "", id = `f-${k}`) => (
     <TextInput id={id} label={label} value={cur[k]} placeholder={placeholder} description={ai(k)} onChange={(v) => set(k, v)} />
@@ -1232,6 +1283,21 @@ export default function Home() {
     ["책임", `제출 ${SUBMITTER} · 승인 전`],
   ];
 
+  /** 사진 위에 가림 상자를 그리는 판. 영수증 가리기와 자료 붙이기가 함께 쓴다. */
+  const maskPad = raw ? <>
+        <div className="maskwrap" aria-label="영수증 미리보기. 끌어서 가릴 영역을 그립니다."
+          onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); drag.current = pos(e); }}
+          onPointerMove={(e) => { if (drag.current) setDragBox(boxOf(drag.current, pos(e))); }}
+          onPointerUp={(e) => { if (drag.current) { const b = boxOf(drag.current, pos(e)); if (b.w > 0.02 && b.h > 0.01) setBoxes((bs) => [...bs, b]); } drag.current = null; setDragBox(null); }}>
+          <img src={raw} alt="영수증" />
+          {[...boxes, ...(dragBox ? [dragBox] : [])].map((b, i) => <i key={i} style={{ left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%` }} />)}
+        </div>
+        <HStack gap={2}>
+          <Sub label="가림 상자 추가" onClick={() => setBoxes((bs) => [...bs, { x: 0.1, y: 0.45, w: 0.8, h: 0.06 }])} />
+          <Sub label="되돌리기" isDisabled={!boxes.length} onClick={() => setBoxes((bs) => bs.slice(0, -1))} />
+        </HStack>
+  </> : null;
+
   return (
     <Frame title={title[step]} side={step === "agent" && phase !== "done" ? "Liner" : undefined}>
       {err ? <Banner status="error" title={err} /> : null}
@@ -1269,17 +1335,7 @@ export default function Home() {
       </> : null}
 
       {step === "mask" && raw ? <>
-        <div className="maskwrap" aria-label="영수증 미리보기. 끌어서 가릴 영역을 그립니다."
-          onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); drag.current = pos(e); }}
-          onPointerMove={(e) => { if (drag.current) setDragBox(boxOf(drag.current, pos(e))); }}
-          onPointerUp={(e) => { if (drag.current) { const b = boxOf(drag.current, pos(e)); if (b.w > 0.02 && b.h > 0.01) setBoxes((bs) => [...bs, b]); } drag.current = null; setDragBox(null); }}>
-          <img src={raw} alt="영수증" />
-          {[...boxes, ...(dragBox ? [dragBox] : [])].map((b, i) => <i key={i} style={{ left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%` }} />)}
-        </div>
-        <HStack gap={2}>
-          <Sub label="가림 상자 추가" onClick={() => setBoxes((bs) => [...bs, { x: 0.1, y: 0.45, w: 0.8, h: 0.06 }])} />
-          <Sub label="되돌리기" isDisabled={!boxes.length} onClick={() => setBoxes((bs) => bs.slice(0, -1))} />
-        </HStack>
+        {maskPad}
         <Note>이름·카드번호 위를 끌어서 가려 주세요. 가린 상자 {boxes.length}개. 메모 속 카드번호·전화번호는 자동으로 가려집니다.</Note>
         <Note>AI에는 가린 사진만 보냅니다. 원본은 이 기기에 보관하고, 단체 공간을 쓰면 암호화해 등록자와 승인자만 볼 수 있습니다. 후원자에게는 가린 사진만 보입니다.</Note>
         <VStack className="grow" />
@@ -1375,7 +1431,27 @@ export default function Home() {
         ) : null}
         <VStack className="grow" />
         <Main label="검토 목록 보기" onClick={() => go("review")} />
+        <Sub label="거래명세서 등 자료 붙이기" onClick={() => startAttach(cur)} />
         <Sub label="지출 하나 더 추가" onClick={startAdd} />
+      </> : null}
+
+      {step === "attach" ? <>
+        <Card variant="muted" padding={3}><Text weight="semibold" hasTabularNumbers>{md(cur.date)} · {cur.item || "항목 미입력"} · {won(cur.amount ?? 0)}</Text></Card>
+        <Note>이 지출과 한 거래인 자료를 붙입니다. 새 지출이 생기지 않고, 영수증과 함께 한 건으로 묶입니다.</Note>
+        <Selector id="att-label" label="자료 종류" options={ATTACH_OPTIONS} value={attLabel} onChange={(v) => setAttLabel(v || ATTACH_LABELS[0])} />
+        <input ref={fileRef} id="att-file" type="file" accept="image/*" hidden onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }} />
+        {raw ? <>
+          {maskPad}
+          <Note>이름·주소·전화번호 위를 끌어서 가려 주세요. 가린 상자 {boxes.length}개. 후원자에게는 가린 사진만 보이고, 원본은 등록자와 승인자만 봅니다. 이 자료는 AI에 보내지 않습니다.</Note>
+        </> : (
+          <Card variant="muted" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); pick(e.dataTransfer.files?.[0]); }}>
+            <EmptyState title="자료 사진" description="거래명세서나 주문내역을 찍은 사진, 화면을 캡처한 그림을 선택하세요." isCompact />
+          </Card>
+        )}
+        <Sub label={raw ? "다른 사진 선택" : "사진 선택"} onClick={() => fileRef.current?.click()} />
+        <VStack className="grow" />
+        <Main label="이 지출에 붙이기" isDisabled={!raw} onClick={saveAttach} />
+        <Sub label="취소" onClick={() => { setRaw(null); go("detail"); }} />
       </> : null}
     </Frame>
   );
