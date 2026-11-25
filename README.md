@@ -17,6 +17,8 @@
 
 그림을 누르면 유튜브에서 열립니다: https://youtu.be/BgRsjSCLiHw
 
+거래명세서 묶기와 같은 거래 찾기까지 담은 3분짜리 새 시연 영상은 [소개 페이지](https://open-receipt-six.vercel.app/#demo)에서 바로 볼 수 있습니다. 파일은 `public/demo/open-receipt-demo.mp4`이고, 만드는 방법은 `video/PLAN.md`에 있습니다.
+
 ## 실행 방법
 
 Node.js 22 이상이 필요합니다.

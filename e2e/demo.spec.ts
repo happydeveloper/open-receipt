@@ -551,6 +551,11 @@ test("소개 페이지: 처음 보는 사람에게 취지와 사용법을 보여
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1, name: "행사가 끝나면, 영수증만 올리세요" })).toBeVisible();
   const main = page.locator("main");
+  // 시연 영상: 누르기 전에는 대표 그림만 받고, 영상 파일은 실제로 열린다
+  const demo = page.getByTestId("demo-video");
+  await expect(demo).toHaveAttribute("poster", "/demo/poster.jpg");
+  await expect(demo).toHaveAttribute("preload", "none");
+  for (const src of ["/demo/poster.jpg", "/demo/open-receipt-demo.mp4"]) expect((await page.request.head(src)).status(), src).toBe(200);
   for (const text of ["행사가 끝난 뒤 정산", "월말 보고", "연말 결산과 후원자 보고", "AG-UI 프로토콜", "GNU 일반 공중 사용 허가서(GPL)", "공익을 위한 도구로 쓰겠습니다", "판정하지 않습니다"]) await expect(main).toContainText(text);
   // 실제 앱 화면 사진이 단계별로 들어 있고 모두 불러와진다
   await expect(page.locator(".lp-step")).toHaveCount(7);

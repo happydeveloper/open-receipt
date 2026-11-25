@@ -1,0 +1,40 @@
+{
+  "title": "열린영수증 시연",
+  "voice": "Yuna",
+  "segments": [
+    { "id": "n0", "kind": "title", "chapter": "시작", "role": "프레이미", "text": "안녕하세요, 프레이미예요. 작은 단체의 총무는 행사가 끝나면 흩어진 영수증을 모아 정산하느라 밤을 새웁니다." },
+    { "id": "n1", "kind": "title", "chapter": "시작", "role": "프레이미", "text": "열린영수증은 영수증만 올리면 에이전트가 기록부터 결산보고서까지 준비해 주는 도구예요. 실제 화면으로 보여 드릴게요." },
+
+    { "id": "r1", "kind": "screen", "dev": "submitter", "chapter": "1. 영수증 올리기", "role": "등록자 · 총무", "text": "먼저 총무의 휴대폰입니다. 가상 단체의 데모 데이터로 시작할게요." },
+    { "id": "r2", "kind": "screen", "dev": "submitter", "chapter": "1. 영수증 올리기", "role": "등록자 · 총무", "text": "지출 추가를 누르고 영수증 사진을 올립니다." },
+    { "id": "r3", "kind": "screen", "dev": "submitter", "chapter": "1. 영수증 올리기", "role": "등록자 · 총무", "text": "이름과 카드번호는 손가락으로 끌어서 가립니다. 에이아이에는 가린 사진만 보냅니다." },
+    { "id": "r4", "kind": "screen", "fast": true, "dev": "submitter", "chapter": "2. 지출 에이전트", "role": "등록자 · 총무", "text": "에이전트에게 맡기면 라이너 모델이 영수증을 읽고, 지난 기록을 살펴 빈칸을 채웁니다." },
+    { "id": "r5", "kind": "screen", "dev": "submitter", "chapter": "2. 지출 에이전트", "role": "등록자 · 총무", "text": "사진만으로 알 수 없는 것만 물어봅니다. 묻는 것에만 답해 주면 돼요." },
+    { "id": "r6", "kind": "screen", "fast": true, "dev": "submitter", "chapter": "2. 지출 에이전트", "role": "등록자 · 총무", "text": "답을 받은 에이전트는 라이너 검색으로 공개된 정산 지침을 찾아봅니다." },
+    { "id": "r7", "kind": "screen", "dev": "submitter", "chapter": "2. 지출 에이전트", "role": "등록자 · 총무", "text": "증빙 묶음이 완성됐어요. 챙길 자료가 출처와 함께 나옵니다. 확정은 사람이 누릅니다." },
+
+    { "id": "r8", "kind": "screen", "dev": "submitter", "chapter": "3. 같은 거래 묶기", "role": "등록자 · 총무", "text": "이번에는 서류 네 장을 한꺼번에 올려 볼게요. 카드영수증, 거래명세서, 주문 화면, 그리고 현수막 영수증입니다." },
+    { "id": "r9", "kind": "screen", "fast": true, "dev": "submitter", "chapter": "3. 같은 거래 묶기", "role": "등록자 · 총무", "text": "에이전트가 한 장씩 읽어 초안으로 정리합니다." },
+    { "id": "r10", "kind": "screen", "fast": true, "dev": "submitter", "chapter": "3. 같은 거래 묶기", "role": "등록자 · 총무", "text": "그런데 앞의 세 장은 한 번 쓴 돈의 서류예요. 묶음 에이전트가 같은 거래를 찾아냅니다." },
+    { "id": "r11", "kind": "screen", "dev": "submitter", "chapter": "3. 같은 거래 묶기", "role": "등록자 · 총무", "text": "가게 이름과 날짜가 조금씩 달라도 금액과 품목으로 추론했어요. 한 건으로 합치기를 누릅니다." },
+    { "id": "r12", "kind": "screen", "dev": "submitter", "chapter": "3. 같은 거래 묶기", "role": "등록자 · 총무", "text": "같은 돈이 세 번 잡히지 않게 됐습니다. 남은 초안은 한꺼번에 확정합니다." },
+
+    { "id": "r13", "kind": "screen", "dev": "submitter", "chapter": "4. 함께 쓰기", "role": "등록자 · 총무", "text": "이제 대표에게 승인을 받을 차례예요. 설정에서 단체 공간을 만들고 초대 링크를 보냅니다." },
+    { "id": "r14", "kind": "screen", "dev": "submitter", "chapter": "4. 함께 쓰기", "role": "등록자 · 총무", "text": "후원자용 보기도 열어 둡니다. 후원자에게 보낼 읽기 전용 링크가 생깁니다." },
+
+    { "id": "a1", "kind": "screen", "dev": "approver", "chapter": "5. 승인", "role": "승인자 · 대표", "text": "여기는 대표의 휴대폰입니다. 초대 링크를 열고, 승인하는 사람으로 참여합니다." },
+    { "id": "a2", "kind": "screen", "dev": "approver", "chapter": "5. 승인", "role": "승인자 · 대표", "text": "올라온 지출을 열어 영수증을 확인합니다. 승인자는 원본 사진도 볼 수 있어요." },
+    { "id": "a3", "kind": "screen", "dev": "approver", "chapter": "5. 승인", "role": "승인자 · 대표", "text": "검토 목록에서 승인을 누릅니다. 승인한 사람의 이름이 기록에 남습니다." },
+
+    { "id": "r15", "kind": "screen", "fast": true, "dev": "submitter", "chapter": "6. 마감과 보고서", "role": "등록자 · 총무", "text": "다시 총무입니다. 마감 전에 마감 점검 에이전트가 전체 기록을 훑어봅니다." },
+    { "id": "r16", "kind": "screen", "dev": "submitter", "chapter": "6. 마감과 보고서", "role": "등록자 · 총무", "text": "빠진 증빙을 찾아, 담당자에게 보낼 요청 문안까지 써 줍니다. 보내는 것은 사람이 합니다." },
+    { "id": "r17", "kind": "screen", "dev": "submitter", "chapter": "6. 마감과 보고서", "role": "등록자 · 총무", "text": "결산보고서입니다. 예산 항목별 합계와 지출 내역이 자동으로 정리됩니다." },
+    { "id": "r18", "kind": "screen", "dev": "submitter", "chapter": "6. 마감과 보고서", "role": "등록자 · 총무", "text": "아래에는 가린 영수증이 지출별로 묶여 있고, 보고서를 파일로 내려받을 수 있습니다." },
+
+    { "id": "s1", "kind": "screen", "dev": "sponsor", "chapter": "7. 후원자 공유", "role": "후원자", "text": "마지막으로 후원자입니다. 받은 링크만 열면 결산보고서가 보입니다. 가입은 필요 없어요." },
+    { "id": "s2", "kind": "screen", "dev": "sponsor", "chapter": "7. 후원자 공유", "role": "후원자", "text": "영수증과 거래명세서도 가린 사진으로 직접 확인합니다. 고칠 수 있는 것은 없습니다." },
+
+    { "id": "n8", "kind": "title", "chapter": "정리", "role": "프레이미", "text": "정리할게요. 영수증 읽기와 세 에이전트는 라이너 모델 에이피아이로, 지침 찾기는 라이너 검색 에이피아이로 동작합니다." },
+    { "id": "n9", "kind": "title", "chapter": "정리", "role": "프레이미", "text": "에이전트는 준비만 하고, 확정과 승인은 사람이 합니다. 열린영수증이었습니다. 고맙습니다." }
+  ]
+}

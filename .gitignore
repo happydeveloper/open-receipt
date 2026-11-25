@@ -11,3 +11,10 @@ next-env.d.ts
 .vercel
 .env*
 .data
+
+# 시연 영상 작업물 (녹화 원본, 음성, 렌더 결과)
+video/raw
+video/out
+video/public/audio
+video/public/clips
+video/node_modules

@@ -71,3 +71,5 @@
 .lp .gd-tip { border-left: 3px solid var(--color-border); padding-left: var(--spacing-3); color: var(--color-text-secondary); max-width: 30em; }
 .gd-next { margin-top: var(--spacing-10); justify-content: center; }
 .lp section[id] { scroll-margin-top: 64px; }
+/* 시연 영상 */
+.lp-video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: var(--radius-container); border: 1px solid var(--color-border); background: #000; box-shadow: var(--shadow-high, 0 18px 40px rgba(0,0,0,.18)); }

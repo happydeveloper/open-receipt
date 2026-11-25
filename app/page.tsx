@@ -73,6 +73,7 @@ export default function Landing() {
         <div className="lp-wrap">
           <span className="lp-brand"><img src="/icon-192.png" alt="" />열린영수증</span>
           <nav className="lp-nav-links">
+            <span className="lp-hide-sm"><Button label="시연 영상" variant="ghost" size="sm" href="#demo" /></span>
             <span className="lp-hide-sm"><Button label="어떻게 쓰나요" variant="ghost" size="sm" href="#how" /></span>
             <Button label="사용 안내" variant="ghost" size="sm" href="/guide" />
             <span className="lp-hide-sm"><Button label="기술" variant="ghost" size="sm" href="#tech" /></span>
@@ -97,6 +98,25 @@ export default function Landing() {
               <p className="lp-note">설치나 가입 없이 바로 열립니다. 가상 데이터로 먼저 둘러볼 수 있고, 지금은 정식 출시 전 시험 버전입니다.</p>
             </div>
             <Phone src="3-agent" alt="에이전트가 영수증을 읽어 기록을 채우고, 모르는 것만 질문하는 화면" />
+          </div>
+        </section>
+
+        <section id="demo">
+          <div className="lp-wrap">
+            <div className="lp-head">
+              <p className="lp-eyebrow">시연 영상</p>
+              <h2>3분으로 보는 열린영수증</h2>
+              <p className="lp-sub">영수증을 올리는 것부터 승인, 결산보고서, 후원자 공유까지 실제 화면으로 보여 드립니다. 에이전트의 답은 실제 Liner API 결과이고, 단체와 영수증은 가상 자료입니다. 자막과 소리가 함께 나옵니다.</p>
+            </div>
+            {/* 영상은 누를 때까지 내려받지 않는다 (preload="none"). 그동안은 대표 그림을 보여 준다. */}
+            <video className="lp-video" controls preload="none" playsInline poster="/demo/poster.jpg" width={1920} height={1080} data-testid="demo-video">
+              <source src="/demo/open-receipt-demo.mp4" type="video/mp4" />
+              이 브라우저에서는 영상을 재생할 수 없습니다. <a href="/demo/open-receipt-demo.mp4">영상 파일 내려받기</a>
+            </video>
+            <div className="lp-cta" style={{ marginTop: "var(--spacing-4)" }}>
+              <Button label="화면 보며 따라 하기 (사용 안내)" href="/guide" />
+              <Button label="지금 써 보기" variant="primary" href="/app" />
+            </div>
           </div>
         </section>
 
