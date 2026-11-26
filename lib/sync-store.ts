@@ -67,7 +67,8 @@ class FileStore implements SyncStore {
 class BlobStore implements SyncStore {
   async get(key: string) {
     const { get } = await import("@vercel/blob");
-    const res = await get(key, { access: "private" });
+    // 캐시를 거치지 않는다. "아직 없다"는 답이 캐시에 남으면 다른 기기가 방금 올린 버전을 한동안 보지 못한다.
+    const res = await get(key, { access: "private", useCache: false });
     if (!res || !res.stream) return null;
     return await new Response(res.stream).text();
   }
