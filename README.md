@@ -4,7 +4,7 @@
 
 - 소개 페이지: https://open-receipt-six.vercel.app (취지, 실제 화면으로 보는 사용법, 출시 알림 신청)
 - 앱: https://open-receipt-six.vercel.app/app
-- 시연 영상: https://youtu.be/BgRsjSCLiHw
+- 시연 영상: https://youtu.be/fnz0AhQ4IRE
 - 모델과 검색: Liner Model API(도구 호출 + 이미지 입력), Liner Search API
 - 에이전트와 화면 사이의 통신: [AG-UI 프로토콜](https://docs.ag-ui.com/) 1.0
 - 사용 안내: https://open-receipt-six.vercel.app/guide (등록자·승인자·후원자가 화면을 보고 따라 하는 방법)
@@ -13,9 +13,9 @@
 
 ## 시연 영상
 
-[![열린영수증 시연 영상](https://img.youtube.com/vi/BgRsjSCLiHw/hqdefault.jpg)](https://youtu.be/BgRsjSCLiHw)
+[![열린영수증 시연 영상](https://img.youtube.com/vi/fnz0AhQ4IRE/hqdefault.jpg)](https://youtu.be/fnz0AhQ4IRE)
 
-그림을 누르면 유튜브에서 열립니다: https://youtu.be/BgRsjSCLiHw
+그림을 누르면 유튜브에서 열립니다: https://youtu.be/fnz0AhQ4IRE
 
 거래명세서 묶기와 같은 거래 찾기까지 담은 3분짜리 새 시연 영상은 [소개 페이지](https://open-receipt-six.vercel.app/#demo)에서 바로 볼 수 있습니다. 파일은 `public/demo/open-receipt-demo.mp4`이고, 만드는 방법은 `video/PLAN.md`에 있습니다.
 
@@ -78,7 +78,7 @@ Vercel에 올리는 경우: 저장소를 Vercel 프로젝트로 가져오고, �
 - **개발 기간**: 2026.11.12 ~ 11.25. 이 저장소의 코드는 모두 이 기간에 새로 작성했습니다.
 - **Liner API**: 세 에이전트(지출, 마감 점검, 묶음)가 Liner Model API로 동작하고, 공개 지침 검색에 Liner Search API를 씁니다. 위 "Liner API를 사용한 기능" 표에 정리했습니다.
 - **데이터**: 화면과 테스트의 단체, 사람, 영수증, 거래명세서는 모두 가상 자료입니다.
-- **제출물**: 이 저장소, [시연 영상](https://youtu.be/BgRsjSCLiHw), 기획서(별도 제출).
+- **제출물**: 이 저장소, [시연 영상](https://youtu.be/fnz0AhQ4IRE), 기획서(별도 제출).
 
 ## 문서
 
