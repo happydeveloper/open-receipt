@@ -134,7 +134,7 @@ describe("T-21 키 보안", () => {
   });
 });
 
-import { clientKey, createLimiter, limitAgent } from "@/lib/rate-limit";
+import { clientKey, createLimiter, limitAgent, limitSync } from "@/lib/rate-limit";
 describe("에이전트 호출 제한", () => {
   const rule = { burst: 3, burstMs: 60_000, daily: 5, globalDaily: 8 };
   it("한 주소가 짧은 시간에 몰아 부르면 거절하고, 시간이 지나면 다시 받는다", () => {
@@ -167,5 +167,42 @@ describe("에이전트 호출 제한", () => {
     expect(res.headers.get("Retry-After")).toBe("60");
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
     expect((await res.json()).error).toContain("직접 입력");
+  });
+});
+
+describe("동기화 주소 호출 제한", () => {
+  const limiters = (now: () => number) => ({ read: createLimiter({ burst: 3, burstMs: 60_000, daily: 100, globalDaily: Infinity }, now), write: createLimiter({ burst: 2, burstMs: 60_000, daily: 100, globalDaily: Infinity }, now), miss: createLimiter({ burst: 2, burstMs: 60_000, daily: 100, globalDaily: Infinity }, now) });
+  const from = (ip: string) => new Request("https://x.test/api/sync/abc", { headers: { "x-forwarded-for": ip } });
+  const ok = async () => new Response("{}", { status: 200 });
+  const none = async () => new Response("{}", { status: 404 });
+
+  it("한 주소가 몰아 부르면 저장소를 부르지 않고 429로 거절하고, 다른 주소와 시간이 지난 뒤에는 받는다", async () => {
+    let t = 1_000_000;
+    const l = limiters(() => t);
+    let calls = 0;
+    const run = async () => { calls++; return ok(); };
+    for (let i = 0; i < 3; i++) expect((await limitSync(from("1.1.1.1"), "read", run, { limiters: l })).status).toBe(200);
+    const res = await limitSync(from("1.1.1.1"), "read", run, { limiters: l });
+    expect(res.status).toBe(429);
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
+    expect((await res.json()).error).toContain("기록은 이 기기에 그대로");
+    expect(calls).toBe(3); // 거절한 요청은 저장소에 닿지 않는다
+    expect((await limitSync(from("2.2.2.2"), "read", run, { limiters: l })).status).toBe(200); // 다른 주소는 영향 없다
+    expect((await limitSync(from("1.1.1.1"), "write", run, { limiters: l })).status).toBe(200); // 쓰기는 따로 센다
+    t += 61_000;
+    expect((await limitSync(from("1.1.1.1"), "read", run, { limiters: l })).status).toBe(200);
+  });
+
+  it("없는 공간을 되풀이해 찾으면 그 주소의 요청을 모두 쉬게 한다. 아직 없는 사진은 세지 않는다", async () => {
+    let t = 1_000_000;
+    const l = limiters(() => t);
+    for (let i = 0; i < 5; i++) expect((await limitSync(from("3.3.3.3"), "read", none, { limiters: l, countMiss: false })).status).toBe(i < 3 ? 404 : 429); // 읽기 한도만 걸린다
+    t += 61_000;
+    expect((await limitSync(from("3.3.3.3"), "read", none, { limiters: l })).status).toBe(404);
+    expect((await limitSync(from("3.3.3.3"), "read", none, { limiters: l })).status).toBe(404);
+    // 두 번 헛짚은 뒤에는 있는 공간을 찾는 요청과 쓰기도 받지 않는다
+    expect((await limitSync(from("3.3.3.3"), "read", ok, { limiters: l })).status).toBe(429);
+    expect((await limitSync(from("3.3.3.3"), "write", ok, { limiters: l })).status).toBe(429);
+    expect((await limitSync(from("4.4.4.4"), "read", ok, { limiters: l })).status).toBe(200);
   });
 });
