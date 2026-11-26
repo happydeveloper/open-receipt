@@ -87,6 +87,11 @@ export interface Expense {
   approvedAt?: string;
   /** 마지막으로 바뀐 시각. 기기 간 동기화에서 더 새로운 쪽을 고르는 데 쓴다. */
   updatedAt?: string;
+  /**
+   * 칸마다 마지막으로 바뀐 시각 (칸 이름 → 시각). 두 기기가 같은 기록의 서로 다른 칸을 고쳤을 때
+   * 양쪽 수정을 모두 살리는 데 쓴다 (lib/sync-merge.ts). 승인은 approvedBy 한 칸으로 적는다.
+   */
+  fieldAt?: Record<string, string>;
   /** 승인, 승인 뒤 수정 같은 변경 이력 */
   log?: LogEntry[];
 }

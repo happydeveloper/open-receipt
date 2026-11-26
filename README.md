@@ -252,7 +252,7 @@ curl -N https://open-receipt-six.vercel.app/api/agent/expense \
 | 구성 | 위치 | 하는 일 |
 | --- | --- | --- |
 | 암호화 | `lib/sync-crypto.ts` | 단체 공간 주소·열쇠 생성, AES-GCM 암복호화, 쓰기 증표 |
-| 합치기 | `lib/sync-merge.ts` | 기록별 최근 변경 우선, 삭제 기록(tombstone), 이미지 분리 |
+| 합치기 | `lib/sync-merge.ts` | 같은 기록을 칸 단위로 합치기(서로 다른 칸을 고치면 둘 다 남음), 삭제 기록(tombstone), 이미지 분리 |
 | 동기화 | `lib/sync-client.ts` | 받기 → 합치기 → 올리기. 다른 기기가 먼저 올렸으면 다시 받아 재시도 |
 | 서버 | `lib/sync-store.ts`, `app/api/sync/` | 암호문 보관, 버전 충돌 감지(409), 열쇠 가진 사람만 쓰기 |
 | 원본 보관 | `lib/originals.ts` | 원본 영수증을 기기의 IndexedDB에 보관 |
@@ -283,8 +283,8 @@ curl -N https://open-receipt-six.vercel.app/api/agent/expense \
 
 ```bash
 npm run typecheck   # 형식 검사
-npm test            # 단위 테스트 108개. 한 거래로 묶기, 같은 거래 찾기, AG-UI 왕복·이벤트 스키마 검증, 두 기기 동기화, 서명 원장, 공유 링크 등 (Liner는 모의)
-npm run test:e2e    # 브라우저 흐름 17개: 시연, 큰 사진 줄여 올리기, 사용 안내, 같은 거래 찾아 합치기, 영수증과 거래명세서 묶기, 첫 방문, 보고서 공유, 두 기기 단체 공간, 후원자용 보기, 서명 원장 등 (에이전트 응답은 모의)
+npm test            # 단위 테스트 118개. 두 기기의 수정을 칸 단위로 합치기, 한 거래로 묶기, 같은 거래 찾기, AG-UI 왕복·이벤트 스키마 검증, 두 기기 동기화, 서명 원장, 공유 링크 등 (Liner는 모의)
+npm run test:e2e    # 브라우저 흐름 18개: 시연, 두 기기가 함께 고치기, 큰 사진 줄여 올리기, 사용 안내, 같은 거래 찾아 합치기, 영수증과 거래명세서 묶기, 첫 방문, 보고서 공유, 두 기기 단체 공간, 후원자용 보기, 서명 원장 등 (에이전트 응답은 모의)
 npm run test:live   # 실제 Liner 호출로 전체 흐름. 개발 서버와 LINER_API_KEY, 크레딧 필요
 ```
 

@@ -44,6 +44,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toCsv, totalAmount, sortByDate, evidenceLabel } from "@/lib/csv";
 import { applyAgentRecord, editField, fallbackSummary, lockedFields, recordValues } from "@/lib/flow";
 import { groupable, mergeGroup, stillValid, toGroupDocs, type GroupProposal } from "@/lib/group";
+import { logEdits } from "@/lib/history";
 import { fitWithin, maskText, type Box } from "@/lib/mask";
 import { ATTACH_LABELS, mapPhotos, MAX_PHOTO_CHARS, newAttachmentId, photoKey, slotsOf } from "@/lib/photos";
 import { buildReport, reportPhotos, reportToHtml, won } from "@/lib/report";
@@ -401,6 +402,11 @@ export default function Home() {
         shared: { org: st.org, projects: st.projects, funder: st.funder, approver: st.approver, sponsorView: st.sponsorView, sponsorNames: st.sponsorNames },
       }, httpApi(), undefined, fittedOriginals);
       if (out.changed) {
+        // 두 기기의 수정이 섞인 기록은 어느 기기도 서명한 적 없는 내용이다. 합친 이 기기가 서명해 둔다.
+        if (out.mergedIds.length) {
+          const mixed = new Map(out.expenses.filter((e) => out.mergedIds.includes(e.id)).map((e) => [e.id, e]));
+          void signChanges(cur, cur.map((e) => mixed.get(e.id) ?? e));
+        }
         setList(out.expenses); live.current.list = out.expenses;
         saveExpenses(window.localStorage, out.expenses, deviceMasked);
         const nextSt: Settings = { ...live.current.settings, ...out.shared, sponsorView: out.shared.sponsorView === true, sponsorNames: out.shared.sponsorNames === true, onboarded: true };
@@ -476,7 +482,8 @@ export default function Home() {
   };
   const persist = (raw: Expense[]) => {
     const prev = live.current.list;
-    const next = touchChanged(prev, raw);
+    // 확정된 기록을 고쳤으면 무엇을 고쳤는지 이력에 남긴 뒤, 바뀐 기록에 시각을 찍는다.
+    const next = touchChanged(prev, logEdits(prev, raw, live.current.settings.submitter || "담당자"));
     setList(next); live.current.list = next;
     void signChanges(prev, next);
     if (!saveExpenses(window.localStorage, next, deviceMasked)) setToast("저장 공간이 부족해 이 기기에 저장하지 못했습니다. 오래된 기록을 내보낸 뒤 정리해 주세요.");

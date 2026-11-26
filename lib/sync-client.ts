@@ -45,6 +45,8 @@ export interface SyncResult extends SyncLocal {
   changed: boolean;
   /** 아직 받지 못한 이미지 수 */
   missingImages: number;
+  /** 두 기기의 수정이 섞여 새로 만들어진 기록의 id. 이 기기가 그 내용에 서명해 둔다 */
+  mergedIds: string[];
   /** 이번에 올리려다 실패한 사진 수 (너무 크거나 서버가 받지 않음). 다음 동기화 때 다시 시도한다 */
   failedUploads: number;
 }
@@ -212,7 +214,7 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
     const sig = (l: Expense[]) => JSON.stringify([...l].sort((a, b) => a.id.localeCompare(b.id)));
     return {
       expenses, tombstones: merged.tombstones, shared, sharedAt, uploaded: [...uploaded], ledger: led.ledger, ledgerProblems: led.problems,
-      version: put.body.version, syncedAt: now, missingImages, failedUploads,
+      version: put.body.version, syncedAt: now, missingImages, failedUploads, mergedIds: merged.merged,
       changed: sig(expenses) !== sig(local.expenses) || JSON.stringify(shared) !== JSON.stringify(local.shared),
     };
   }

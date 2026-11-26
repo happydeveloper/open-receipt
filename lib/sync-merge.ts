@@ -2,11 +2,12 @@
 /**
  * 단체 공간에서 두 기기의 기록을 합치는 규칙. 서버 없이 테스트할 수 있는 순수 함수만 둔다.
  *
- * - 같은 id의 기록은 updatedAt이 더 최근인 쪽을 고른다.
+ * - 같은 id의 기록은 칸 단위로 합친다. 바탕은 updatedAt이 더 최근인 쪽이고, 다른 쪽이 더 나중에 고친 칸은 그 값을 쓴다.
  * - 지운 기록은 삭제 기록(tombstone)으로 남겨, 다른 기기의 옛 사본이 되살리지 못하게 한다.
  *   단, 지운 뒤에 다른 기기에서 다시 고친 기록은 살린다.
  * - 사진은 문서에 넣지 않고 IMAGE_REF 표시만 둔다. 사진은 건별로 따로 올린다.
  */
+import { fieldLabel, showValue } from "./history";
 import { isPhoto, mapPhotos, photosOf } from "./photos";
 import { withStatus } from "./status";
 import type { Ledger } from "./ledger";
@@ -38,21 +39,107 @@ export const IMAGE_REF = "sync:image";
 
 const time = (s?: string) => (s ? Date.parse(s) || 0 : 0);
 
-/** 바뀐 기록에 시각을 찍는다. 이전 목록과 내용이 같은 기록은 그대로 둔다. */
+/** 내용에 해당하는 칸. 승인자가 본 내용이 바뀌었는지 따질 때도 이 목록을 쓴다. */
+const CONTENT = ["date", "item", "amount", "merchant", "purpose", "project", "budgetCategory", "paymentMethod", "payer", "reimbursement", "evidence", "summary"] as const;
+/** 칸 단위로 합치는 칸. 승인(approvedBy, approvedAt)은 한 덩어리로 따로 다룬다. */
+const FIELDS = [...CONTENT, "confirmed", "submittedBy", "guidance"] as const;
+const APPROVAL = "approvedBy";
+const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const bare = (e: Expense) => JSON.stringify({ ...e, updatedAt: undefined, fieldAt: undefined });
+
+/**
+ * 바뀐 기록에 시각을 찍는다. 이전 목록과 내용이 같은 기록은 그대로 둔다.
+ * 이미 있던 기록을 고쳤으면 어느 칸이 바뀌었는지도 칸별 시각(fieldAt)에 적는다.
+ */
 export function touchChanged(prev: Expense[], next: Expense[], now = new Date().toISOString()): Expense[] {
-  const before = new Map(prev.map((e) => [e.id, JSON.stringify({ ...e, updatedAt: undefined })]));
-  return next.map((e) => (before.get(e.id) === JSON.stringify({ ...e, updatedAt: undefined }) && e.updatedAt ? e : { ...e, updatedAt: now }));
+  const before = new Map(prev.map((e) => [e.id, e]));
+  return next.map((e) => {
+    const old = before.get(e.id);
+    if (old && bare(old) === bare(e) && e.updatedAt) return e;
+    if (!old) return { ...e, updatedAt: now };
+    const fieldAt = { ...(e.fieldAt ?? {}) };
+    for (const f of FIELDS) if (!same(old[f], e[f])) fieldAt[f] = now;
+    if (!same([old.approvedBy, old.approvedAt], [e.approvedBy, e.approvedAt])) fieldAt[APPROVAL] = now;
+    return { ...e, updatedAt: now, ...(Object.keys(fieldAt).length ? { fieldAt } : {}) };
+  });
 }
 
-/** 두 기기의 기록을 합친다. 같은 기록은 더 최근에 바뀐 쪽을, 삭제는 삭제 이후에 바뀌지 않았을 때만 적용한다. */
-export function mergeExpenses(local: Expense[], remote: Expense[], localTombs: Tombstones, remoteTombs: Tombstones): { expenses: Expense[]; tombstones: Tombstones } {
+/**
+ * 같은 기록의 두 사본을 칸 단위로 합친다.
+ *
+ * 바탕은 더 최근에 바뀐 사본(win)이다. 다른 사본(lose)이 어떤 칸을 win보다 나중에 고쳤다는 표시(fieldAt)가 있으면
+ * 그 칸만 lose의 값으로 바꾼다. 그래서 총무가 목적을 고치고 승인자가 예산 항목을 고쳐도 둘 다 남는다.
+ * 같은 칸을 둘 다 고쳤으면 나중에 고친 쪽이 남는다.
+ *
+ * 승인은 승인자가 본 내용에 대한 것이다. 합친 내용이 승인한 쪽이 갖고 있던 내용과 다르면 승인을 풀고 이력을 남긴다.
+ */
+export function mergeRecord(win: Expense, lose: Expense): { expense: Expense; mixed: boolean } {
+  const stamp = (e: Expense, f: string) => time(e.fieldAt?.[f]);
+  const out: any = { ...win, aiDrafted: [...win.aiDrafted] };
+  const fieldAt: Record<string, string> = { ...(win.fieldAt ?? {}) };
+  let mixed = false;
+  const takes = (f: string) => stamp(lose, f) > 0 && stamp(lose, f) > stamp(win, f);
+  // 두 기기가 같은 칸을 서로 다르게 고쳤으면 한쪽 값은 덮인다. 무엇이 남고 무엇이 덮였는지 이력에 적어 둔다.
+  const clashes: { at: string; by: string; text: string }[] = [];
+  for (const f of FIELDS) {
+    if (stamp(win, f) > 0 && stamp(lose, f) > 0 && !same(win[f], lose[f]) && f !== "confirmed" && f !== "submittedBy" && f !== "guidance") {
+      const [kept, dropped] = takes(f) ? [lose, win] : [win, lose];
+      const a = showValue(kept, f), b = showValue(dropped, f);
+      if (a !== b) clashes.push({ at: kept.fieldAt![f], by: "동기화", text: `${fieldLabel(f)}: 두 기기에서 함께 고쳐 나중에 고친 값(${a})을 남겼습니다. 덮인 값: ${b}` });
+    }
+    if (!takes(f)) continue;
+    fieldAt[f] = lose.fieldAt![f];
+    if (same(win[f], lose[f])) continue;
+    out[f] = lose[f];
+    mixed = true;
+    // AI가 채운 값이라는 표시도 값을 가져온 쪽을 따른다.
+    out.aiDrafted = out.aiDrafted.filter((k: string) => k !== f);
+    if (lose.aiDrafted.includes(f)) out.aiDrafted.push(f);
+  }
+  let approvedFrom = win;
+  if (takes(APPROVAL)) {
+    fieldAt[APPROVAL] = lose.fieldAt![APPROVAL];
+    if (!same([win.approvedBy, win.approvedAt], [lose.approvedBy, lose.approvedAt])) {
+      out.approvedBy = lose.approvedBy;
+      out.approvedAt = lose.approvedAt;
+      approvedFrom = lose;
+      mixed = true;
+    }
+  }
+  // 이력은 양쪽 것을 모두 남긴다.
+  const seen = new Set<string>();
+  const log = [...(win.log ?? []), ...(lose.log ?? []), ...clashes].filter((l) => { const k = `${l.at}|${l.by}|${l.text}`; if (seen.has(k)) return false; seen.add(k); return true; }).sort((x, y) => x.at.localeCompare(y.at));
+  if (log.length) out.log = log.slice(-20);
+  // 사진은 기기에 따라 자리표시일 수 있으므로, 사진이 있는지만 견준다.
+  const seenBy = (e: Expense, f: (typeof CONTENT)[number]) =>
+    f === "evidence" ? { ...e.evidence, image: !!e.evidence.image, extra: (e.evidence.extra ?? []).map((a) => ({ id: a.id, label: a.label })) } : e[f];
+  if (mixed && out.approvedBy && CONTENT.some((f) => !same(seenBy(out, f), seenBy(approvedFrom, f)))) {
+    const at = [win.updatedAt, lose.updatedAt].sort().at(-1) ?? "";
+    out.log = [...(out.log ?? []), { at, by: out.approvedBy, text: `승인한 뒤 다른 기기에서 내용이 바뀌어 승인이 풀렸습니다 (이전 승인: ${out.approvedBy})` }].slice(-20);
+    out.approvedBy = undefined;
+    out.approvedAt = undefined;
+  }
+  if (Object.keys(fieldAt).length) out.fieldAt = fieldAt;
+  return { expense: out as Expense, mixed };
+}
+
+/**
+ * 두 기기의 기록을 합친다. 같은 기록은 칸 단위로 합치고(mergeRecord), 삭제는 삭제 이후에 바뀌지 않았을 때만 적용한다.
+ * merged에는 양쪽 수정이 섞여 어느 쪽 사본과도 달라진 기록의 id가 담긴다.
+ */
+export function mergeExpenses(local: Expense[], remote: Expense[], localTombs: Tombstones, remoteTombs: Tombstones): { expenses: Expense[]; tombstones: Tombstones; merged: string[] } {
   const tombstones: Tombstones = { ...remoteTombs };
   for (const [id, at] of Object.entries(localTombs)) if (time(at) > time(tombstones[id])) tombstones[id] = at;
   const byId = new Map<string, Expense>();
+  const merged: string[] = [];
   for (const e of remote) byId.set(e.id, e);
   for (const e of local) {
     const other = byId.get(e.id);
-    if (!other || time(e.updatedAt) >= time(other.updatedAt)) byId.set(e.id, e);
+    if (!other) { byId.set(e.id, e); continue; }
+    const [win, lose] = time(e.updatedAt) >= time(other.updatedAt) ? [e, other] : [other, e];
+    const m = mergeRecord(win, lose);
+    byId.set(e.id, m.expense);
+    if (m.mixed) merged.push(e.id);
   }
   const expenses: Expense[] = [];
   for (const e of byId.values()) {
@@ -61,7 +148,7 @@ export function mergeExpenses(local: Expense[], remote: Expense[], localTombs: T
     if (deletedAt) delete tombstones[e.id]; // 삭제 뒤에 다시 고친 기록은 살린다
     expenses.push(withStatus(e));
   }
-  return { expenses, tombstones };
+  return { expenses, tombstones, merged: merged.filter((id) => expenses.some((e) => e.id === id)) };
 }
 
 /** 문서에 넣을 때 이미지를 자리표시로 바꾼다. */
