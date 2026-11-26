@@ -23,7 +23,7 @@ test("오류 화면: 기록이 그대로라고 알리고, 백업을 내려받고
   const screen = page.getByTestId("error-screen");
   await expect(screen).toContainText("화면을 여는 중 문제가 생겼습니다");
   await expect(screen).toContainText("기록은 이 기기에 그대로 있습니다");
-  await expect(screen).toContainText("영수증과 기록 내용은 어디로도 보내지 않습니다."); // 테스트에서는 오류 수집이 꺼져 있다
+  await expect(screen).toContainText(/영수증과 기록 내용은 (어디로도 )?보내지 않습니다\./); // 오류 수집이 켜진 배포본에서는 "기록됩니다" 문구가 함께 나온다
 
   // 비상 백업: 설정 화면의 백업과 같은 파일이 나온다
   const [file] = await Promise.all([page.waitForEvent("download"), screen.getByRole("button", { name: "기록 백업 내려받기" }).click()]);
