@@ -175,7 +175,7 @@ export default function Guide() {
               <div className="lp-card"><h3>승인 버튼이 안 보여요</h3><p>함께 쓰는 단체 공간에서는 "승인하는 사람"으로 참여한 기기에만 승인 버튼이 있습니다. 자기가 올린 지출은 승인할 수 없습니다.</p></div>
               <div className="lp-card"><h3>다른 사람 화면에 안 보여요</h3><p>지출 목록 아래의 "동기화"를 누르세요. 인터넷이 연결되어 있어야 합니다.</p></div>
               <div className="lp-card"><h3>휴대폰을 바꿨어요</h3><p>기록은 기기에 저장됩니다. 설정의 "백업 내보내기"로 파일을 받아 두었다가 새 기기에서 "백업 가져오기"를 누르세요.</p></div>
-              <div className="lp-card"><h3>거래명세서가 PDF예요</h3><p>지금은 사진만 붙일 수 있습니다. 화면을 캡처한 그림으로 붙여 주세요.</p></div>
+              <div className="lp-card"><h3>거래명세서가 PDF예요</h3><p>PDF를 그대로 고르면 됩니다. 쪽마다 그림으로 바뀌어 차례로 붙습니다. 암호가 걸린 PDF는 열 수 없으니 암호를 푼 파일을 올려 주세요.</p></div>
             </div>
           </div>
         </section>

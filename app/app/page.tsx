@@ -45,6 +45,7 @@ import { toCsv, totalAmount, sortByDate, evidenceLabel } from "@/lib/csv";
 import { applyAgentRecord, editField, fallbackSummary, lockedFields, recordValues } from "@/lib/flow";
 import { groupable, mergeGroup, stillValid, toGroupDocs, type GroupProposal } from "@/lib/group";
 import { logEdits } from "@/lib/history";
+import { isPdf, PDF_MAX_PAGES, pdfToImages } from "@/lib/pdf";
 import { fitWithin, maskText, type Box } from "@/lib/mask";
 import { ATTACH_LABELS, mapPhotos, MAX_PHOTO_CHARS, newAttachmentId, photoKey, slotsOf } from "@/lib/photos";
 import { buildReport, reportPhotos, reportToHtml, won } from "@/lib/report";
@@ -327,6 +328,9 @@ export default function Home() {
   const [editing, setEditing] = useState(false);
   const [memo, setMemo] = useState("");
   const [raw, setRaw] = useState<string | null>(null);
+  // PDF를 올렸을 때: 아직 붙이지 않은 나머지 쪽과, 지금 보고 있는 쪽 번호
+  const [morePages, setMorePages] = useState<string[]>([]);
+  const [pdfPage, setPdfPage] = useState<{ no: number; total: number } | null>(null);
   // 지출에 함께 묶을 자료의 종류 (attach 단계)
   const [attLabel, setAttLabel] = useState(ATTACH_LABELS[0]);
   const [boxes, setBoxes] = useState<Box[]>([]);
@@ -507,7 +511,7 @@ export default function Home() {
     resetGroup();
     // 사업·행사는 비워 둔다. 에이전트가 지난 기록을 보고 채우거나 묻는다.
     setCur(newExpense({ project: "", submittedBy: SUBMITTER }));
-    setEditing(false); setMemo(""); setRaw(null); setBoxes([]); setErr("");
+    setEditing(false); setMemo(""); setRaw(null); setBoxes([]); setErr(""); setMorePages([]); setPdfPage(null);
     agentRef.current = null; setPendingIds([]);
     setPhase("idle"); setSteps([]); setQuestions([]); setGuide({ checklist: [], sources: [] });
     setStep("upload"); go("add");
@@ -518,7 +522,15 @@ export default function Home() {
   }
   /** 이미 있는 지출에 거래명세서 같은 자료를 붙이는 화면을 연다. */
   function startAttach(e: Expense) {
-    setCur(e); setEditing(true); setRaw(null); setBoxes([]); setErr(""); setAttLabel(ATTACH_LABELS[0]);
+    setCur(e); setEditing(true); setRaw(null); setBoxes([]); setErr(""); setAttLabel(ATTACH_LABELS[0]); setMorePages([]); setPdfPage(null);
+    setStep("attach"); go("add");
+  }
+  /** PDF의 첫 쪽을 영수증으로 올린 뒤, 나머지 쪽을 같은 지출의 자료로 이어서 붙인다. */
+  function attachRestOfPdf(e: Expense) {
+    const [next, ...rest] = morePages;
+    if (!next) return;
+    setCur(e); setEditing(true); setRaw(next); setMorePages(rest); setBoxes([]); setErr(""); setAttLabel(ATTACH_LABELS[0]);
+    setPdfPage((p) => (p ? { ...p, no: p.no + 1 } : p));
     setStep("attach"); go("add");
   }
   /** 고른 사진을 가려서 이 지출에 붙인다. 새 지출을 만들지 않으므로 건수와 금액은 그대로다. */
@@ -531,9 +543,19 @@ export default function Home() {
       const image = await makeMaskedImage(raw, boxes);
       // 원본은 영수증과 같이 이 기기의 보관함에만 둔다.
       await deviceOriginals.put(photoKey(before.id, id), await makeMaskedImage(raw, []));
-      const e = attachEvidence(before, { id, label: attLabel, image, original: true }, SUBMITTER);
+      // PDF에서 온 쪽이면 몇 쪽인지 이름에 붙인다 (예: 거래명세서 2쪽).
+      const label = pdfPage && pdfPage.total > 1 ? `${attLabel} ${pdfPage.no}쪽` : attLabel;
+      const e = attachEvidence(before, { id, label, image, original: true }, SUBMITTER);
       persist(list.map((x) => (x.id === e.id ? e : x)));
-      resetClose(); setCur(e); setRaw(null); setBoxes([]);
+      resetClose(); setCur(e); setBoxes([]);
+      // PDF의 다음 쪽이 남아 있으면 이어서 보여 준다. 쪽마다 가릴 곳이 다르므로 한 쪽씩 확인한다.
+      if (morePages.length) {
+        const [next, ...rest] = morePages;
+        setRaw(next); setMorePages(rest); setPdfPage((p) => (p ? { ...p, no: p.no + 1 } : p));
+        setToast(`${label}을 붙였습니다. 다음 쪽을 확인해 주세요 (남은 ${morePages.length}쪽).`); window.scrollTo(0, 0);
+        return;
+      }
+      setRaw(null); setPdfPage(null);
       go("detail"); setToast(`${attLabel} 자료를 이 지출에 붙였습니다.${before.approvedBy ? " 승인이 풀렸으니 다시 승인받아 주세요." : ""}`);
     } catch (e: any) { setErr(e.message || "자료를 붙이지 못했습니다."); }
   }
@@ -545,8 +567,19 @@ export default function Home() {
   }
   async function pick(file: File | undefined) {
     if (!file) return;
-    if (!file.type.startsWith("image/")) return setErr("사진 파일(JPG, PNG 등)만 올릴 수 있습니다.");
-    try { setRaw(await readAsDataUrl(file)); setBoxes([]); setErr(""); } catch (e: any) { setErr(e.message); }
+    setToast("");
+    if (isPdf(file)) {
+      // PDF는 쪽마다 그림으로 바꾼다. 첫 쪽부터 보여 주고, 나머지는 차례로 이어서 붙인다.
+      try {
+        const { pages, total } = await pdfToImages(file);
+        if (!pages.length) throw new Error("PDF에 쪽이 없습니다.");
+        setRaw(pages[0]); setMorePages(pages.slice(1)); setPdfPage({ no: 1, total: pages.length }); setBoxes([]);
+        setErr(total > pages.length ? `PDF가 ${total}쪽이라 앞의 ${PDF_MAX_PAGES}쪽만 올립니다.` : "");
+      } catch (e: any) { setErr(e.message); }
+      return;
+    }
+    if (!file.type.startsWith("image/")) return setErr("사진 파일(JPG, PNG 등)이나 PDF만 올릴 수 있습니다.");
+    try { setRaw(await readAsDataUrl(file)); setBoxes([]); setErr(""); setMorePages([]); setPdfPage(null); } catch (e: any) { setErr(e.message); }
   }
   async function useDemoReceipt() {
     try {
@@ -758,13 +791,21 @@ export default function Home() {
   async function addBulkFiles(files: FileList | null) {
     if (!files) return;
     const room = BULK_MAX - bulk.length;
-    const picked = [...files].filter((f) => f.type.startsWith("image/")).slice(0, room);
+    const usable = [...files].filter((f) => f.type.startsWith("image/") || isPdf(f));
     const added: BulkItem[] = [];
-    for (const f of picked) {
-      try { added.push({ id: crypto.randomUUID(), name: f.name, raw: await readAsDataUrl(f), boxes: [], state: "ready", note: "" }); } catch { /* 읽지 못한 파일은 건너뛴다 */ }
+    let skipped = files.length - usable.length;
+    for (const f of usable) {
+      try {
+        // PDF는 쪽마다 한 장으로 센다. 같은 서류의 쪽들은 올린 뒤 묶음 에이전트가 한 건으로 합치자고 제안한다.
+        const shots = isPdf(f) ? (await pdfToImages(f)).pages.map((raw, i, all) => ({ name: all.length > 1 ? `${f.name} ${i + 1}쪽` : f.name, raw })) : [{ name: f.name, raw: await readAsDataUrl(f) }];
+        for (const s of shots) {
+          if (added.length >= room) { skipped++; continue; }
+          added.push({ id: crypto.randomUUID(), name: s.name, raw: s.raw, boxes: [], state: "ready", note: "" });
+        }
+      } catch { skipped++; /* 읽지 못한 파일은 건너뛴다 */ }
     }
     setBulk((b) => [...b, ...added]);
-    setErr(files.length > picked.length ? `사진 파일만, 한 번에 ${BULK_MAX}장까지 올릴 수 있습니다. ${files.length - picked.length}개는 빠졌습니다.` : "");
+    setErr(skipped ? `사진과 PDF만, 한 번에 ${BULK_MAX}장까지 올릴 수 있습니다 (PDF는 쪽마다 한 장). ${skipped}개는 빠졌습니다.` : "");
   }
   const patchBulk = (id: string, patch: Partial<BulkItem>) => setBulk((b) => b.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   /** 영수증 한 장을 에이전트에 맡겨 초안으로 저장한다. 묻지 않고 끝까지 진행시킨다. */
@@ -1001,7 +1042,7 @@ export default function Home() {
       <Frame title="영수증 여러 장 올리기" side={project}>
         {err ? <Banner status="error" title={err} /> : null}
         <Note>행사가 끝난 뒤 모아 둔 영수증을 한꺼번에 올리면, 에이전트가 한 장씩 읽어 "{project}" 사업의 기록 초안으로 정리합니다. 묻지 않고 끝까지 진행하며, 빠진 정보는 나중에 한 건씩 채웁니다.</Note>
-        <input ref={bulkRef} id="bulk-files" type="file" accept="image/*" multiple hidden onChange={(e) => { addBulkFiles(e.target.files); e.target.value = ""; }} />
+        <input ref={bulkRef} id="bulk-files" type="file" accept="image/*,application/pdf,.pdf" multiple hidden onChange={(e) => { addBulkFiles(e.target.files); e.target.value = ""; }} />
         <Sub label={bulk.length ? "사진 더 추가" : "사진 선택 (여러 장)"} isDisabled={bulkBusy || bulk.length >= BULK_MAX} onClick={() => bulkRef.current?.click()} />
         <TextInput id="bulk-memo" label="공통 메모 (선택)" value={bulkMemo} placeholder="예: 11월 워크숍 준비물과 다과" onChange={setBulkMemo} />
         {target ? (
@@ -1474,11 +1515,14 @@ export default function Home() {
       {err ? <Banner status="error" title={err} /> : null}
 
       {step === "upload" ? <>
-        <input ref={fileRef} id="file" type="file" accept="image/*" hidden onChange={(e) => pick(e.target.files?.[0])} />
+        <input ref={fileRef} id="file" type="file" accept="image/*,application/pdf,.pdf" hidden onChange={(e) => pick(e.target.files?.[0])} />
         {raw
-          ? <VStack className="maskwrap static"><img src={raw} alt="올린 영수증 미리보기" /></VStack>
+          ? <>
+              <VStack className="maskwrap static"><img src={raw} alt="올린 영수증 미리보기" /></VStack>
+              {pdfPage && pdfPage.total > 1 ? <Note>PDF {pdfPage.total}쪽 가운데 1쪽입니다. 이 쪽으로 지출을 기록하고, 나머지 {morePages.length}쪽은 저장한 뒤 같은 지출의 자료로 이어서 붙입니다.</Note> : null}
+            </>
           : <Card variant="muted" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); pick(e.dataTransfer.files?.[0]); }}>
-              <EmptyState title="영수증 사진" description="사진을 끌어다 놓거나 아래에서 선택하세요." isCompact />
+              <EmptyState title="영수증 사진이나 PDF" description="사진이나 PDF를 끌어다 놓거나 아래에서 선택하세요." isCompact />
             </Card>}
         <HStack gap={2}>
           <Sub label={raw ? "다른 사진 선택" : "사진 선택"} onClick={() => fileRef.current?.click()} />
@@ -1603,27 +1647,30 @@ export default function Home() {
         ) : null}
         <VStack className="grow" />
         <Main label="검토 목록 보기" onClick={() => go("review")} />
+        {morePages.length ? <Sub label={`PDF의 나머지 ${morePages.length}쪽 붙이기`} onClick={() => attachRestOfPdf(cur)} /> : null}
         <Sub label="거래명세서 등 자료 붙이기" onClick={() => startAttach(cur)} />
         <Sub label="지출 하나 더 추가" onClick={startAdd} />
       </> : null}
 
       {step === "attach" ? <>
         <Card variant="muted" padding={3}><Text weight="semibold" hasTabularNumbers>{md(cur.date)} · {cur.item || "항목 미입력"} · {won(cur.amount ?? 0)}</Text></Card>
+        {toast ? <Banner status="success" title={toast} /> : null}
         <Note>이 지출과 한 거래인 자료를 붙입니다. 새 지출이 생기지 않고, 영수증과 함께 한 건으로 묶입니다.</Note>
+        {pdfPage && pdfPage.total > 1 ? <Note>PDF {pdfPage.total}쪽 가운데 {pdfPage.no}쪽입니다. 쪽마다 가릴 곳을 확인하고 붙입니다.</Note> : null}
         <Selector id="att-label" label="자료 종류" options={ATTACH_OPTIONS} value={attLabel} onChange={(v) => setAttLabel(v || ATTACH_LABELS[0])} />
-        <input ref={fileRef} id="att-file" type="file" accept="image/*" hidden onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }} />
+        <input ref={fileRef} id="att-file" type="file" accept="image/*,application/pdf,.pdf" hidden onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }} />
         {raw ? <>
           {maskPad}
           <Note>이름·주소·전화번호 위를 끌어서 가려 주세요. 가린 상자 {boxes.length}개. 후원자에게는 가린 사진만 보이고, 원본은 등록자와 승인자만 봅니다. 이 자료는 AI에 보내지 않습니다.</Note>
         </> : (
           <Card variant="muted" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); pick(e.dataTransfer.files?.[0]); }}>
-            <EmptyState title="자료 사진" description="거래명세서나 주문내역을 찍은 사진, 화면을 캡처한 그림을 선택하세요." isCompact />
+            <EmptyState title="자료 사진이나 PDF" description="거래명세서나 주문내역의 PDF, 찍은 사진, 화면을 캡처한 그림을 선택하세요." isCompact />
           </Card>
         )}
         <Sub label={raw ? "다른 사진 선택" : "사진 선택"} onClick={() => fileRef.current?.click()} />
         <VStack className="grow" />
         <Main label="이 지출에 붙이기" isDisabled={!raw} onClick={saveAttach} />
-        <Sub label="취소" onClick={() => { setRaw(null); go("detail"); }} />
+        <Sub label={morePages.length || (pdfPage && pdfPage.no > 1) ? "나머지 쪽은 붙이지 않기" : "취소"} onClick={() => { setRaw(null); setMorePages([]); setPdfPage(null); go("detail"); }} />
       </> : null}
     </Frame>
   );
