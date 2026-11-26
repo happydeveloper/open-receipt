@@ -88,7 +88,8 @@ test("함께 모으기: 여러 사람이 올린 영수증을 총무가 모아 �
 
   // 3. 총무가 동기화하면 누가 무엇을 올렸는지 안내가 뜬다
   await syncDevice(page);
-  await expect(page.locator("main")).toContainText(/(이회원, 최회원|최회원, 이회원) 님이 올린 지출 2건이 들어왔습니다\./);
+  // 화면으로 돌아올 때 조용히 한 번 맞추기도 해서, 두 건이 한 번에 들어올 수도 한 건씩 나뉘어 들어올 수도 있다.
+  await expect(page.locator("main")).toContainText(/님이 올린 지출 [12]건이 들어왔습니다\./);
   await expect(page.locator("main")).toContainText("개인 선결제 · 이회원");
   await expect(page.locator("main")).toContainText("현금 · 최회원");
   await page.locator("#search").fill("최회원");
@@ -136,7 +137,8 @@ test("함께 모으기: 여러 사람이 올린 영수증을 총무가 모아 �
   //    총무는 검토 목록에 들어가기만 해도 최신 상태를 받는다 (방금 맞춘 것이 아니면 들어갈 때 한 번 맞춘다)
   await page.waitForTimeout(16_000);
   await page.getByRole("button", { name: "검토 목록" }).click();
-  await expect(page.locator("main")).toContainText("박대표 님이 1건을 승인했습니다.", { timeout: 30_000 });
+  // 안내는 목록 화면에서 이미 떴다 사라졌을 수 있으므로(화면으로 돌아올 때도 조용히 맞춘다), 승인된 상태가 들어왔는지를 본다.
+  await expect(page.getByRole("listitem").filter({ hasText: "행사 다과" }).first()).toContainText("완료", { timeout: 30_000 });
   await page.getByRole("button", { name: "지출 목록으로" }).click();
 
   // 5. 단체가 "등록자도 승인"으로 바꾼다 → 총무가 최회원의 지출을 승인한다

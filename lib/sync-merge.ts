@@ -28,6 +28,8 @@ export interface SharedSettings {
   submitterApproves?: boolean;
   /** 예산: 사업 이름 → 예산 항목 → 금액 */
   budgets?: Record<string, Record<string, number>>;
+  /** 마감한 사업 (lib/closing.ts). 다른 설정과 달리 사업마다 나중 것이 남도록 따로 합친다 */
+  closed?: Record<string, { at: string; by: string; open?: boolean }>;
 }
 export interface SyncDoc {
   v: 1;

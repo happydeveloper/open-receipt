@@ -6,6 +6,7 @@
 import { mergeLedgers, recordsFingerprint, summarize, type Ledger, type Problem } from "./ledger";
 import type { ImageBag } from "./originals";
 import { photosOf, slotsOf } from "./photos";
+import { mergeClosings } from "./closing";
 import { buildViewBundle, viewImages } from "./sponsor-view";
 import { decryptText, encryptText, packText, unpackText, viewerWorkspace, writeToken, type Workspace } from "./sync-crypto";
 import { clampFuture, DOC_LIMIT, IMAGE_REF, imagesOf, mergeExpenses, restoreImages, slimGuidance, stripImages, type SharedSettings, type SyncDoc, type Tombstones } from "./sync-merge";
@@ -122,7 +123,9 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
     const merged = mergeExpenses(mine, restoreImages(theirs, have), local.tombstones, remote.tombstones);
     const remoteNewer = (Date.parse(remote.sharedAt) || 0) > (Date.parse(local.sharedAt) || 0);
     const base = remoteNewer ? remote.shared : local.shared;
-    const shared: SharedSettings = { ...base, projects: uniq([...base.projects, ...(remoteNewer ? local.shared.projects : remote.shared.projects)]) };
+    // 마감 기록은 통째로 덮어쓰지 않고 사업마다 나중 것을 남긴다. 한 기기가 다른 설정을 바꾸는 사이에 다른 기기가 한 마감이 사라지면 안 된다.
+    const closed = mergeClosings(local.shared.closed, remote.shared.closed);
+    const shared: SharedSettings = { ...base, projects: uniq([...base.projects, ...(remoteNewer ? local.shared.projects : remote.shared.projects)]), ...(Object.keys(closed).length ? { closed } : {}) };
     const sharedAt = remoteNewer ? remote.sharedAt : local.sharedAt || now;
 
     // 원장: 받은 사본을 검증해 합친다. 내 사본이 더 길면 내 것이 올라가 다른 기기가 따라잡는다.

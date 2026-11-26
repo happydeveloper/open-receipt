@@ -230,7 +230,8 @@ test("보고서 공유: 이름을 가린 링크를 만들어 다른 창에서 �
   // 깨진 링크
   await other.goto(new URL("/r#broken", link).href);
   await other.reload();
-  await expect(other.getByText("보고서를 열 수 없습니다")).toBeVisible();
+  // 화면 낭독기용 알림 영역에도 같은 문구가 잠깐 실리므로 제목으로 찾는다.
+  await expect(other.getByRole("heading", { name: "보고서를 열 수 없습니다" })).toBeVisible();
 });
 
 /** 직접 동기화하고, 그 동기화가 끝날 때까지 기다린다 (진행 중이던 동기화가 있으면 그 뒤에 한 번 더 돈다). */

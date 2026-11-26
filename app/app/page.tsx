@@ -52,6 +52,7 @@ import { buildReport, reportPhotos, reportToHtml, won } from "@/lib/report";
 import { ReceiptGallery } from "../receipts";
 import { ReportBody } from "../report-view";
 import { DEMO_PROJECT } from "@/lib/seed";
+import { changedAfterClose, closeBlock, closeProject, closingOf, guardClosed, isClosed, normalizeClosings, reopenProject, unfinished } from "@/lib/closing";
 import { addProject, BACKUP_KEY, backupAdvice, DEMO_SETTINGS, EMPTY_SETTINGS, loadSettings, makeBackup, missingForStart, normalizeBudgets, parseBackup, saveSettings, setBudget, SETTINGS_KEY, type Settings } from "@/lib/settings";
 import { filterExpenses, isFiltering, NO_FILTER, type ListFilter } from "@/lib/search";
 import { buildShare, encodeShare, LONG_LINK } from "@/lib/share";
@@ -280,6 +281,8 @@ export default function Home() {
   const [draft, setDraft] = useState({ org: "", submitter: "", approver: "", project: "", funder: "" });
   const [newProject, setNewProject] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // 사업 마감: 마감하거나 풀기 전에 한 번 더 묻는다
+  const [confirmClosing, setConfirmClosing] = useState(false);
   const [share, setShare] = useState({ rows: "rows", names: "hide", link: "", note: "" });
   const importRef = useRef<HTMLInputElement>(null);
   const [lastBackupAt, setLastBackupAt] = useState("");
@@ -424,12 +427,12 @@ export default function Home() {
       if (oversized.length) {
         const fitted = new Map<string, string>();
         for (const s of oversized) { try { fitted.set(s.key, await fitPhoto(s.image!)); } catch { /* 줄이지 못한 사진은 아래에서 실패로 센다 */ } }
-        persist(live.current.list.map((e) => mapPhotos(e, (img, key) => fitted.get(key) ?? img)));
+        persist(live.current.list.map((e) => mapPhotos(e, (img, key) => fitted.get(key) ?? img)), true);
       }
       const { list: cur, settings: st, meta: m } = live.current;
       const out = await syncNow(ws, {
         expenses: cur, tombstones: m.tombstones, uploaded: m.uploaded, sharedAt: m.sharedAt, ledger: live.current.led.ledger, version: m.version,
-        shared: { org: st.org, projects: st.projects, funder: st.funder, approver: st.approver, sponsorView: st.sponsorView, sponsorNames: st.sponsorNames, submitterApproves: st.submitterApproves, budgets: st.budgets },
+        shared: { org: st.org, projects: st.projects, funder: st.funder, approver: st.approver, sponsorView: st.sponsorView, sponsorNames: st.sponsorNames, submitterApproves: st.submitterApproves, budgets: st.budgets, closed: st.closed },
       }, httpApi(), undefined, fittedOriginals);
       if (out.changed) {
         // 다른 사람이 올린 기록이나 승인이 들어왔으면 알린다. 조용히 도는 자동 동기화에서도 알린다.
@@ -445,7 +448,7 @@ export default function Home() {
         }
         setList(out.expenses); live.current.list = out.expenses;
         saveExpenses(window.localStorage, out.expenses, deviceMasked);
-        const nextSt: Settings = { ...live.current.settings, ...out.shared, sponsorView: out.shared.sponsorView === true, sponsorNames: out.shared.sponsorNames === true, submitterApproves: out.shared.submitterApproves === true, budgets: normalizeBudgets(out.shared.budgets), onboarded: true };
+        const nextSt: Settings = { ...live.current.settings, ...out.shared, sponsorView: out.shared.sponsorView === true, sponsorNames: out.shared.sponsorNames === true, submitterApproves: out.shared.submitterApproves === true, budgets: normalizeBudgets(out.shared.budgets), closed: normalizeClosings(out.shared.closed), onboarded: true };
         setSettings(nextSt); live.current.settings = nextSt; saveSettings(window.localStorage, nextSt);
         if (!out.shared.projects.includes(project) && out.shared.projects[0]) setProject(out.shared.projects[0]);
       }
@@ -509,17 +512,25 @@ export default function Home() {
   }, []);
 
   const SUBMITTER = settings.submitter || "담당자";
+  const lockedMsg = (p: string) => `${p} 사업은 마감되어 기록을 올리거나 고칠 수 없습니다. 고치려면 결산보고서 화면에서 마감을 풀어 주세요.`;
+  /** 마감된 사업이면 안내 문구를, 아니면 빈 글을 돌려준다. */
+  const lockOf = (p: string | undefined) => (p && isClosed(live.current.settings.closed, p) ? lockedMsg(p) : "");
   // 승인한 사람으로 기록할 이름. 단체 공간에서는 역할과 관계없이 이 기기를 쓰는 사람 본인이다
   // (등록자가 승인했는데 설정에 적힌 대표 이름으로 남으면 안 된다). 혼자 쓰는 기기에서는 설정에 적은 승인자 이름을 쓴다.
   const APPROVER = (meta.ws || settings.role === "approver" ? settings.submitter : settings.approver) || settings.submitter || "승인자";
   const keep = (next: Settings) => {
     const prev = live.current.settings;
-    const sharedChanged = prev.org !== next.org || prev.funder !== next.funder || prev.approver !== next.approver || prev.projects.join("|") !== next.projects.join("|") || prev.sponsorView !== next.sponsorView || prev.sponsorNames !== next.sponsorNames || prev.submitterApproves !== next.submitterApproves || JSON.stringify(prev.budgets) !== JSON.stringify(next.budgets);
+    const sharedChanged = prev.org !== next.org || prev.funder !== next.funder || prev.approver !== next.approver || prev.projects.join("|") !== next.projects.join("|") || prev.sponsorView !== next.sponsorView || prev.sponsorNames !== next.sponsorNames || prev.submitterApproves !== next.submitterApproves || JSON.stringify(prev.budgets) !== JSON.stringify(next.budgets) || JSON.stringify(prev.closed) !== JSON.stringify(next.closed);
     setSettings(next); live.current.settings = next; saveSettings(window.localStorage, next);
     if (sharedChanged && live.current.meta.ws) keepMeta({ ...live.current.meta, sharedAt: stampNow() });
   };
-  const persist = (raw: Expense[]) => {
+  /** system: 사진 크기를 다시 맞추는 것처럼 내용을 바꾸지 않는 내부 저장. 마감 잠금을 따지지 않는다. */
+  const persist = (input: Expense[], system = false) => {
     const prev = live.current.list;
+    // 마감된 사업을 건드리는 변경은 여기서 한 번 더 걸러 되돌린다 (화면에서 먼저 막지만, 빠뜨린 길이 있어도 새지 않게).
+    const guarded = system ? { list: input, blocked: 0, projects: [] as string[] } : guardClosed(prev, input, live.current.settings.closed);
+    const raw = guarded.list;
+    if (guarded.blocked) setTimeout(() => setToast(lockedMsg(guarded.projects.join(", "))), 0);
     // 확정된 기록을 고쳤으면 무엇을 고쳤는지 이력에 남긴 뒤, 바뀐 기록에 시각을 찍는다.
     const at = stampNow();
     const next = touchChanged(prev, logEdits(prev, raw, live.current.settings.submitter || "담당자", at), at);
@@ -562,11 +573,13 @@ export default function Home() {
     setStep("upload"); go("add");
   }
   function startFix(e: Expense) {
+    if (lockOf(e.project)) return setToast(lockOf(e.project));
     setCur(e); setEditing(true); setErr("");
     setStep("alt"); go("add");
   }
   /** 이미 있는 지출에 거래명세서 같은 자료를 붙이는 화면을 연다. */
   function startAttach(e: Expense) {
+    if (lockOf(e.project)) return setToast(lockOf(e.project));
     setCur(e); setEditing(true); setRaw(null); setBoxes([]); setErr(""); setAttLabel(ATTACH_LABELS[0]); setMorePages([]); setPdfPage(null);
     setStep("attach"); go("add");
   }
@@ -605,6 +618,7 @@ export default function Home() {
     } catch (e: any) { setErr(e.message || "자료를 붙이지 못했습니다."); }
   }
   function removeAttachment(e: Expense, attachmentId: string) {
+    if (lockOf(e.project)) return setToast(lockOf(e.project));
     const next = detachEvidence(e, attachmentId, SUBMITTER);
     persist(list.map((x) => (x.id === e.id ? next : x)));
     deviceOriginals.del(photoKey(e.id, attachmentId));
@@ -716,6 +730,9 @@ export default function Home() {
     let e = cur;
     if (!e.summary) e = { ...e, summary: fallbackSummary(e) };
     if (guide.checklist.length) e = { ...e, guidance: { query: "", sources: guide.sources, checklist: guide.checklist, searchedAt: new Date().toISOString() } };
+    // 마감된 사업으로는 올릴 수 없고, 마감된 사업에 있던 기록도 바꿀 수 없다.
+    const lock = lockOf(e.project) || lockOf(list.find((x) => x.id === e.id)?.project);
+    if (lock) { setErr(lock); window.scrollTo(0, 0); return; }
     e = reconfirmExpense(e, SUBMITTER, list.find((x) => x.id === e.id));
     persist(list.some((x) => x.id === e.id) ? list.map((x) => (x.id === e.id ? e : x)) : [...list, e]);
     if (e.project) setProject(e.project);
@@ -724,11 +741,13 @@ export default function Home() {
   }
   function saveFix() {
     const e = withStatus(cur);
+    if (lockOf(e.project)) return setErr(lockOf(e.project));
     persist(list.map((x) => (x.id === e.id ? e : x)));
     resetClose();
     go("review"); setToast(evidenceMissing(e) ? "저장했습니다. 증빙은 아직 보완이 필요합니다." : "증빙을 보완했습니다.");
   }
   function approve(e: Expense) {
+    if (lockOf(e.project)) return setToast(lockOf(e.project));
     const block = approvalBlock(e, ME, POLICY);
     if (block) return setToast(`${block}.`);
     persist(list.map((x) => (x.id === e.id ? approveExpense(x, APPROVER, stampNow()) : x)));
@@ -737,6 +756,7 @@ export default function Home() {
   }
   /** 승인하는 사람이 사유를 적어 올린 사람에게 되돌린다. */
   function sendBack(e: Expense) {
+    if (lockOf(e.project)) return setToast(lockOf(e.project));
     const block = approvalBlock(e, ME, POLICY);
     if (block) return setToast(`${block}.`);
     if (!returnReason.trim()) return setErr("되돌리는 사유를 적어 주세요. 올린 사람이 무엇을 고치면 되는지 알 수 있게요.");
@@ -821,14 +841,26 @@ export default function Home() {
     if (miss.length) return setErr(`${miss.join(", ")}을(를) 입력해 주세요.`);
     leaveWorkspace(); keep(next); persist([]); setProject(next.projects[0]); go("list");
   }
+  /** 이 사업을 마감하거나 마감을 푼다. 승인할 수 있는 사람만 한다. */
+  function setClosing(close: boolean) {
+    const block = closeBlock(ME, POLICY);
+    if (block) return setToast(`${block}.`);
+    const st = live.current.settings;
+    keep({ ...st, closed: close ? closeProject(st.closed, project, APPROVER, stampNow()) : reopenProject(st.closed, project, APPROVER, stampNow()) });
+    setConfirmClosing(false); resetClose();
+    setToast(close ? `${project} 사업을 마감했습니다. 이제 이 사업의 기록은 올리거나 고칠 수 없습니다.` : `${project} 사업의 마감을 풀었습니다. 다시 기록을 올리고 고칠 수 있습니다.`);
+    if (live.current.meta.ws) void doSync(undefined, true);
+  }
   function openDetail(e: Expense) { setCur(e); setConfirmDelete(false); go("detail"); }
   function editExisting(e: Expense) {
+    if (lockOf(e.project)) return setToast(lockOf(e.project));
     // 고치면 다시 승인받아야 한다.
     setCur({ ...e, approvedBy: undefined, approvedAt: undefined, confirmed: false });
     setEditing(false); setPhase("idle"); setGuide({ checklist: e.guidance?.checklist ?? [], sources: e.guidance?.sources ?? [] });
     setStep("edit"); go("add");
   }
   function removeExpense(e: Expense) {
+    if (lockOf(e.project)) { setConfirmDelete(false); return setToast(lockOf(e.project)); }
     // 다른 기기에서 되살아나지 않도록 삭제 기록을 남긴다.
     if (live.current.meta.ws) keepMeta({ ...live.current.meta, tombstones: { ...live.current.meta.tombstones, [e.id]: stampNow() } });
     persist(list.filter((x) => x.id !== e.id));
@@ -930,6 +962,7 @@ export default function Home() {
     }
   }
   async function runBulk() {
+    if (lockOf(project)) return setErr(lockOf(project));
     setBulkBusy(true); setErr(""); setBulkMask(null);
     const queue = bulk.filter((x) => x.state === "ready" || x.state === "error");
     // 두 장씩 나란히 처리한다.
@@ -945,6 +978,8 @@ export default function Home() {
   const groupPool = () => live.current.list.filter((e) => e.project === project && groupable(e));
   /** 묶음 에이전트를 돌린다. quiet면 견줄 서류가 없을 때나 실패했을 때 조용히 넘어간다. */
   async function runGroup(quiet = false) {
+    // 마감된 사업의 기록은 합칠 수 없으므로 찾지도 않는다.
+    if (lockOf(project)) { resetGroup(); if (!quiet) { setGroupNote(lockOf(project)); setGroupPhase("done"); } return; }
     const docs = toGroupDocs(groupPool());
     if (docs.length < 2) { resetGroup(); if (!quiet) { setGroupNote("견줄 서류가 두 장보다 적습니다."); setGroupPhase("done"); } return; }
     setGroupPhase("running"); setGroupSteps([]); setGroups([]); setGroupNote("");
@@ -964,6 +999,8 @@ export default function Home() {
   }
   /** 기록 여러 건을 한 건으로 합쳐 저장한다. 사라지는 기록의 원본 사진은 남는 기록 아래로 옮긴다. */
   async function applyMerge(main: Expense, others: Expense[]) {
+    const lock = [main, ...others].map((x) => lockOf(x.project)).find(Boolean);
+    if (lock) throw new Error(lock);
     const { merged, removed, moves } = mergeGroup(main, others, SUBMITTER);
     for (const m of moves) {
       const original = await deviceOriginals.get(m.from);
@@ -988,8 +1025,10 @@ export default function Home() {
     const others = g.ids.filter((id) => id !== g.mainId).map((id) => pool.find((e) => e.id === id));
     setGroups((gs) => gs.filter((x) => x !== g));
     if (!main || others.some((o) => !o)) return setToast("그 사이 기록이 바뀌어 합치지 못했습니다. 다시 찾아 주세요.");
-    const merged = await applyMerge(main, others as Expense[]);
-    setToast(`${merged.item || "지출"} ${won(merged.amount ?? 0)}: 서류 ${g.ids.length}장을 한 건으로 합쳤습니다.`);
+    try {
+      const merged = await applyMerge(main, others as Expense[]);
+      setToast(`${merged.item || "지출"} ${won(merged.amount ?? 0)}: 서류 ${g.ids.length}장을 한 건으로 합쳤습니다.`);
+    } catch (e: any) { setToast(e.message || "합치지 못했습니다."); }
   }
   /** 지금 올리던 서류를 새 지출로 저장하지 않고, 이미 있는 기록의 자료로 붙인다. */
   async function attachToExisting(existing: Expense) {
@@ -1000,6 +1039,7 @@ export default function Home() {
   }
   /** 필수 정보가 다 채워진 초안을 한꺼번에 확정한다. */
   function confirmDrafts() {
+    if (lockOf(project)) return setToast(lockOf(project));
     const ready = mine.filter((e) => e.status === "draft" && !e.confirmed && missingFields(e).length === 0);
     if (!ready.length) return;
     // 같은 영수증일 수 있는 초안은 남겨 두고 사람이 하나씩 확인하게 한다.
@@ -1343,6 +1383,7 @@ export default function Home() {
     return (
       <Frame title="지출 상세" side={STATUS_LABEL[e.status]}>
         {toast ? <Banner status="success" title={toast} /> : null}
+        {closingOf(settings.closed, e.project) ? <Banner status="info" title="마감된 사업입니다" description={`${closingOf(settings.closed, e.project)!.by || "담당자"} 님이 ${closingOf(settings.closed, e.project)!.at.slice(0, 10)}에 마감했습니다. 기록을 올리거나 고칠 수 없습니다. 고치려면 결산보고서 화면에서 마감을 풀어야 합니다.`} data-testid="closed-note" /> : null}
         {e.summary ? <Text>{e.summary}</Text> : null}
         <Card padding={3} data-testid="detail">
           <List hasDividers edge="flush" density="compact">
@@ -1430,7 +1471,8 @@ export default function Home() {
           />
         ) : (
           <>
-            <Selector id="project" label="사업·행사" options={projects.map((p) => ({ value: p, label: p }))} value={project} onChange={(v) => { if (v) { setProject(v); resetClose(); } }} />
+            <Selector id="project" label="사업·행사" options={projects.map((p) => ({ value: p, label: isClosed(settings.closed, p) ? `${p} (마감)` : p }))} value={project} onChange={(v) => { if (v) { setProject(v); resetClose(); setConfirmClosing(false); } }} />
+            {closingOf(settings.closed, project) ? <Banner status="info" title="마감된 사업입니다" description={`${closingOf(settings.closed, project)!.by || "담당자"} 님이 ${closingOf(settings.closed, project)!.at.slice(0, 10)}에 마감했습니다. 기록을 올리거나 고칠 수 없습니다. 고치려면 결산보고서 화면에서 마감을 풀어야 합니다.`} data-testid="closed-note" /> : null}
             <HStack gap={2}>
               <Stat label="지출" value={`${mine.length}건`} />
               <Stat label="합계" value={won(totalAmount(mine))} />
@@ -1482,6 +1524,7 @@ export default function Home() {
     return (
       <Frame title="검토" side={meta.ws ? `${settings.role === "approver" ? "승인자" : "등록자"} ${SUBMITTER}` : `대표 ${APPROVER}`}>
         <Text type="supporting" color="secondary">{project}</Text>
+        {closingOf(settings.closed, project) ? <Banner status="info" title="마감된 사업입니다" description={`${closingOf(settings.closed, project)!.by || "담당자"} 님이 ${closingOf(settings.closed, project)!.at.slice(0, 10)}에 마감했습니다. 기록을 올리거나 고칠 수 없습니다. 고치려면 결산보고서 화면에서 마감을 풀어야 합니다.`} data-testid="closed-note" /> : null}
         <Rows items={mine} onOpen={openDetail} dup={dupIds} who={!!meta.ws} />
         {toast ? <Banner status="success" title={toast} /> : null}
         {mine.some((e) => dupIds.has(e.id)) ? <Banner status="warning" title={`같은 영수증일 수 있는 기록 ${mine.filter((e) => dupIds.has(e.id)).length}건`} description="날짜와 금액이 같은 기록입니다. 목록에서 '중복 확인' 표시가 있는 건을 열어 확인해 주세요." data-testid="dup-review" /> : null}
@@ -1538,7 +1581,8 @@ export default function Home() {
   if (view === "report") {
     const r = buildReport(list, project, undefined, settings.budgets[project]);
     return (
-      <Frame title={`${project} 결산보고서 초안`} side={`지출 기간 ${r.period}`} wide>
+      <Frame title={`${project} 결산보고서${isClosed(settings.closed, project) ? " (마감)" : " 초안"}`} side={`지출 기간 ${r.period}`} wide>
+        {toast ? <VStack className="noprint"><Banner status="success" title={toast} /></VStack> : null}
         {r.openItems.length > 0 ? <VStack className="noprint"><Banner status="warning" title={`확인할 항목이 ${r.openItems.length}건 남아 있습니다.`} description="그대로 내보낼 수 있지만 보고서에 표시됩니다." /></VStack> : null}
         <ReportBody r={r} />
         <Heading level={2}>8. 영수증</Heading>
@@ -1553,6 +1597,29 @@ export default function Home() {
           </List>
         </Card>
         <Note>보고서 지문은 이 사업의 기록이 하나라도 바뀌면 달라집니다. 보고서를 보낼 때 지문을 함께 알려 두면, 받은 분이 나중에 같은 지문인지 견줘 볼 수 있습니다.</Note>
+        <VStack className="noprint">
+          <Card data-testid="closing">
+            <VStack gap={3}>
+              <Heading level={2}>사업 마감</Heading>
+              {closingOf(settings.closed, project) ? <>
+                <Banner status="success" title="마감된 사업입니다" description={`${closingOf(settings.closed, project)!.by || "담당자"} 님이 ${closingOf(settings.closed, project)!.at.slice(0, 10)}에 마감했습니다. 이 사업의 기록은 올리거나 고치거나 지울 수 없습니다.`} />
+                {changedAfterClose(list, settings.closed, project).length ? <Banner status="warning" title={`마감 뒤에 바뀐 기록 ${changedAfterClose(list, settings.closed, project).length}건`} description={`마감을 모르던 다른 기기에서 고친 것이 들어왔습니다: ${changedAfterClose(list, settings.closed, project).slice(0, 5).map((e) => e.item || "항목 미입력").join(", ")}. 기록의 변경 이력을 확인해 주세요.`} data-testid="changed-after-close" /> : null}
+                {closeBlock(ME, POLICY) ? <Note>{closeBlock(ME, POLICY)}. 마감을 풀려면 승인자에게 요청하세요.</Note>
+                  : confirmClosing
+                    ? <HStack gap={2}><Button label="마감 풀기 확인" variant="destructive" width="100%" onClick={() => setClosing(false)} /><Sub label="취소" onClick={() => setConfirmClosing(false)} /></HStack>
+                    : <Button label="마감 풀기" variant="ghost" onClick={() => setConfirmClosing(true)} />}
+                {confirmClosing ? <Note>마감을 풀면 이 사업의 기록을 다시 올리고 고칠 수 있습니다. 누가 언제 풀었는지 남습니다.</Note> : null}
+              </> : <>
+                <Note>결산이 끝났으면 사업을 마감하세요. 마감하면 이 사업의 기록을 더 올리거나 고치거나 지울 수 없어, 보고한 뒤에 내용이 바뀌는 일을 막습니다. 필요하면 다시 풀 수 있습니다.</Note>
+                {closeBlock(ME, POLICY) ? <Note>{closeBlock(ME, POLICY)}.</Note>
+                  : confirmClosing ? <>
+                    {unfinished(list, project) ? <Banner status="warning" title={`아직 끝나지 않은 기록이 ${unfinished(list, project)}건 있습니다`} description="초안, 증빙 보완, 승인 대기 상태인 기록입니다. 그대로 마감하면 이 상태로 잠깁니다." data-testid="unfinished" /> : null}
+                    <HStack gap={2}><Main label="마감 확인" onClick={() => setClosing(true)} /><Sub label="취소" onClick={() => setConfirmClosing(false)} /></HStack>
+                  </> : <Sub label="이 사업 마감하기" onClick={() => setConfirmClosing(true)} />}
+              </>}
+            </VStack>
+          </Card>
+        </VStack>
         <HStack gap={2} className="noprint">
           <Main label="CSV 내려받기" onClick={() => download(`${project}_지출내역.csv`, toCsv(mine), "text/csv;charset=utf-8")} />
           <Sub label="보고서 내려받기" onClick={() => download(`${project}_결산보고서_초안.html`, reportToHtml(r, reportPhotos(list, project)), "text/html;charset=utf-8")} />
