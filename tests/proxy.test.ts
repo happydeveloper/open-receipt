@@ -10,6 +10,7 @@ import path from "node:path";
 import { chatWithTools, LinerError, MODEL_URL, SEARCH_URL, searchWeb, type LinerDeps } from "@/lib/liner";
 import { normalizeAmount } from "@/lib/draft";
 import { toSources } from "@/lib/guidelines";
+import { contentSecurityPolicy, originOf, securityHeaders } from "@/lib/security-headers";
 
 const KEY = "test-key-not-real";
 const jsonRes = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -204,5 +205,28 @@ describe("동기화 주소 호출 제한", () => {
     expect((await limitSync(from("3.3.3.3"), "read", ok, { limiters: l })).status).toBe(429);
     expect((await limitSync(from("3.3.3.3"), "write", ok, { limiters: l })).status).toBe(429);
     expect((await limitSync(from("4.4.4.4"), "read", ok, { limiters: l })).status).toBe(200);
+  });
+});
+
+describe("보안 헤더", () => {
+  it("자료를 보낼 수 있는 곳을 이 서버와 지정한 주소로 좁히고, 틀에 끼워 넣지 못하게 한다", () => {
+    const csp = contentSecurityPolicy({ connect: [originOf("https://abc@errors.example.com/123"), originOf("")] });
+    expect(csp).toContain("connect-src 'self' https://errors.example.com;");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("object-src 'none'");
+    expect(csp).toContain("img-src 'self' data: blob:");
+    expect(csp).not.toContain("'unsafe-eval'"); // 운영에서는 eval을 허용하지 않는다 (wasm만)
+    expect(csp).not.toContain("*");
+    expect(contentSecurityPolicy({ dev: true })).toContain("'unsafe-eval'");
+    expect(contentSecurityPolicy()).toContain("connect-src 'self';");
+  });
+  it("필요한 헤더가 모두 있고, 열쇠가 든 주소가 바깥으로 알려지지 않게 한다", () => {
+    const h = Object.fromEntries(securityHeaders().map((x) => [x.key, x.value]));
+    expect(h["Referrer-Policy"]).toBe("no-referrer");
+    expect(h["X-Frame-Options"]).toBe("DENY");
+    expect(h["X-Content-Type-Options"]).toBe("nosniff");
+    expect(h["Permissions-Policy"]).toContain("camera=()");
+    expect(originOf("http://x.test")).toBe(""); // https가 아니면 허용 목록에 넣지 않는다
+    expect(originOf("그냥 글")).toBe("");
   });
 });
