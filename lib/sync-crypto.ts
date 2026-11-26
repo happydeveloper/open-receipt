@@ -20,17 +20,55 @@ export interface Workspace {
   id: string;
   /** 암호화 열쇠. 서버로 보내지 않는다. */
   key: string;
+  /**
+   * 암호로 잠근 공간에만 있다. 초대 링크에 들어가는 값이고, 열쇠는 이 값과 암호로 만든다.
+   * 그래서 링크만으로는 열 수 없다. 참여 전(암호를 아직 넣지 않았을 때)에는 key가 비어 있다.
+   */
+  link?: string;
 }
 export const ID_PATTERN = /^[A-Za-z0-9_-]{20,40}$/;
 
 export function newWorkspace(): Workspace {
   return { id: b64(crypto.getRandomValues(new Uint8Array(16))), key: b64(crypto.getRandomValues(new Uint8Array(32))) };
 }
-/** 초대 링크의 # 뒤 부분. */
-export const inviteCode = (ws: Workspace) => `join=${ws.id}.${ws.key}`;
+/* ---------- 암호로 잠근 공간 ---------- */
+export const PASSWORD_MIN = 6;
+/** 암호가 쓸 만한지. 문제가 있으면 안내 문구를, 괜찮으면 빈 글을 돌려준다. */
+export function passwordProblem(password: string): string {
+  const p = password.trim();
+  if (p.length < PASSWORD_MIN) return `암호는 ${PASSWORD_MIN}자 이상으로 정해 주세요.`;
+  if (/^(.)\1+$/.test(p) || /^(0123456789|1234567890|123456789|12345678|1234567|123456)$/.test(p)) return "너무 쉬운 암호입니다. 다른 암호를 정해 주세요.";
+  return "";
+}
+const LOCK_ROUNDS = 310_000;
+/**
+ * 링크 값과 암호로 열쇠를 만든다 (PBKDF2). 일부러 느리게 만들어, 링크를 손에 넣은 사람이 암호를 하나씩 넣어 보기 어렵게 한다.
+ * 암호는 기기 밖으로 나가지 않는다.
+ */
+export async function lockedKey(id: string, link: string, password: string): Promise<string> {
+  const enc = new TextEncoder();
+  const base = await crypto.subtle.importKey("raw", enc.encode(password.trim().normalize("NFKC")) as BufferSource, "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: enc.encode(`open-receipt-lock:${id}.${link}`) as BufferSource, iterations: LOCK_ROUNDS }, base, 256);
+  return b64(new Uint8Array(bits));
+}
+/** 암호로 잠근 새 공간. */
+export async function newLockedWorkspace(password: string): Promise<Workspace> {
+  const { id, key: link } = newWorkspace();
+  return { id, key: await lockedKey(id, link, password), link };
+}
+/** 초대 링크로 들어온 사람이 넣은 암호로 공간을 연다. 암호가 맞는지는 서버의 기록을 풀어 봐야 안다. */
+export async function unlockInvite(invite: Workspace, password: string): Promise<Workspace> {
+  if (!invite.link) return invite;
+  return { id: invite.id, key: await lockedKey(invite.id, invite.link, password), link: invite.link };
+}
+export const isLocked = (ws: Workspace | null | undefined) => !!ws?.link;
+
+/** 초대 링크의 # 뒤 부분. 잠근 공간의 링크에는 열쇠가 아니라 링크 값만 들어간다. */
+export const inviteCode = (ws: Workspace) => (ws.link ? `join=p.${ws.id}.${ws.link}` : `join=${ws.id}.${ws.key}`);
 export function parseInvite(hash: string): Workspace | null {
-  const m = hash.replace(/^#/, "").match(/^join=([A-Za-z0-9_-]{20,40})\.([A-Za-z0-9_-]{40,50})$/);
-  return m ? { id: m[1], key: m[2] } : null;
+  const m = hash.replace(/^#/, "").match(/^join=(p\.)?([A-Za-z0-9_-]{20,40})\.([A-Za-z0-9_-]{40,50})$/);
+  if (!m) return null;
+  return m[1] ? { id: m[2], key: "", link: m[3] } : { id: m[2], key: m[3] };
 }
 
 async function aesKey(ws: Workspace): Promise<CryptoKey> {

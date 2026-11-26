@@ -4,11 +4,11 @@
  * 원본 영수증 공유, 후원자 열쇠의 권한 범위.
  */
 import { describe, expect, it } from "vitest";
-import { decryptText, encryptText, packText, unpackText, inviteCode, newWorkspace, parseInvite, parseViewCode, viewCode, viewerWorkspace, writeToken } from "@/lib/sync-crypto";
+import { decryptText, encryptText, packText, unpackText, inviteCode, isLocked, newLockedWorkspace, newWorkspace, parseInvite, passwordProblem, unlockInvite, parseViewCode, viewCode, viewerWorkspace, writeToken } from "@/lib/sync-crypto";
 import { memoryBag } from "@/lib/originals";
 import type { ViewBundle } from "@/lib/sponsor-view";
 import { IMAGE_REF, mergeExpenses, slimGuidance, stripImages, touchChanged } from "@/lib/sync-merge";
-import { syncNow, SyncError, type SyncApi, type SyncLocal } from "@/lib/sync-client";
+import { canOpen, EMPTY_META, loadMeta, saveMeta, syncNow, SyncError, type SyncApi, type SyncLocal } from "@/lib/sync-client";
 import { clearViewImages, delImage, getDoc, getImage, getView, MemoryStore, purgeRecordImages, putDoc, putImage, putView, type SyncStore } from "@/lib/sync-store";
 import { demoSnackExpense, seedExpenses } from "@/lib/seed";
 import { approveExpense } from "@/lib/status";
@@ -411,5 +411,63 @@ describe("원본 영수증과 후원자용 보기", () => {
     const bundle = JSON.parse((await decryptText(await viewerWorkspace(ws), (await api(store).getView(ws.id)).body.data))!) as ViewBundle;
     expect(bundle.showNames).toBe(true);
     expect(JSON.stringify(bundle)).toContain("김○○");
+  });
+});
+
+describe("암호로 잠근 단체 공간", () => {
+  const snack = () => at({ ...demoSnackExpense(), evidence: { kind: "receipt" as const, image: BIG } }, "2026-11-20T10:00:00.000Z");
+  it("초대 링크에는 열쇠가 없고, 링크와 암호가 둘 다 있어야 같은 열쇠가 나온다", async () => {
+    const ws = await newLockedWorkspace("다온모임2026");
+    const code = inviteCode(ws);
+    expect(code.startsWith("join=p.")).toBe(true);
+    expect(code).not.toContain(ws.key);
+    const invite = parseInvite("#" + code)!;
+    expect(invite).toEqual({ id: ws.id, key: "", link: ws.link });
+    expect(isLocked(invite)).toBe(true);
+    expect((await unlockInvite(invite, "다온모임2026")).key).toBe(ws.key);
+    expect((await unlockInvite(invite, " 다온모임2026 ")).key).toBe(ws.key); // 앞뒤 빈칸은 봐준다
+    expect((await unlockInvite(invite, "다온모임2025")).key).not.toBe(ws.key);
+    // 암호 없는 공간의 링크는 예전 그대로다
+    const open = newWorkspace();
+    expect(isLocked(open)).toBe(false);
+    expect(parseInvite("#" + inviteCode(open))).toEqual(open);
+  });
+
+  it("암호가 맞아야 열리고, 틀린 암호로는 읽지도 쓰지도 못한다", async () => {
+    const store = new MemoryStore();
+    const ws = await newLockedWorkspace("다온모임2026");
+    await syncNow(ws, device([snack()]), api(store), "2026-11-20T10:01:00.000Z");
+    const invite = parseInvite("#" + inviteCode(ws))!;
+    const right = await unlockInvite(invite, "다온모임2026");
+    const wrong = await unlockInvite(invite, "틀린암호123");
+    expect(await canOpen(right, api(store))).toBe("open");
+    expect(await canOpen(wrong, api(store))).toBe("wrong");
+    expect(await canOpen(await newLockedWorkspace("아무암호12"), api(store))).toBe("none");
+    expect(await canOpen(right, api(null))).toBe("error");
+    // 맞는 암호: 기록을 받는다
+    const joined = await syncNow(right, device(), api(store), "2026-11-20T10:02:00.000Z");
+    expect(joined.expenses.map((e) => e.id)).toEqual([snack().id]);
+    // 틀린 암호: 풀지 못하고, 서버에도 쓰지 못한다
+    await expect(syncNow(wrong, device([snack()]), api(store))).rejects.toThrow(SyncError);
+    const res = await api(store).putDoc(ws.id, await writeToken(wrong), { data: "x", baseVersion: joined.version });
+    expect(res.status).toBe(403);
+    // 서버에 남은 것 어디에도 암호나 열쇠가 없다
+    const all = [...store.data.entries()].flat().join("\n");
+    expect(all).not.toContain("다온모임2026");
+    expect(all).not.toContain(ws.key);
+  });
+
+  it("쉬운 암호는 받지 않는다", () => {
+    expect(passwordProblem("12345")).toContain("6자 이상");
+    expect(passwordProblem("111111")).toContain("너무 쉬운");
+    expect(passwordProblem("123456")).toContain("너무 쉬운");
+    expect(passwordProblem("다온모임2026")).toBe("");
+  });
+
+  it("잠근 공간의 링크 값은 기기에 저장했다가 다시 읽어도 남는다", async () => {
+    const ws = await newLockedWorkspace("다온모임2026");
+    const kv = new Map<string, string>();
+    saveMeta({ setItem: (k, v) => void kv.set(k, v) }, { ...EMPTY_META, ws });
+    expect(loadMeta({ getItem: (k) => kv.get(k) ?? null }).ws).toEqual(ws);
   });
 });

@@ -303,6 +303,21 @@ export function httpApi(fetchImpl: typeof fetch = fetch): SyncApi {
 }
 
 /* ---------- 이 기기에 보관하는 동기화 상태 ---------- */
+/**
+ * 이 열쇠로 단체 공간이 열리는지 본다. 참여하기 전에 암호가 맞는지 확인하는 데 쓴다.
+ * "open" 열림, "wrong" 열쇠(암호)가 다름, "none" 아직 만들어지지 않은 공간, "error" 서버에 닿지 못함.
+ */
+export async function canOpen(ws: Workspace, api: SyncApi): Promise<"open" | "wrong" | "none" | "error"> {
+  try {
+    const got = await api.getDoc(ws.id);
+    if (got.status === 404) return "none";
+    if (got.status !== 200 || typeof got.body?.data !== "string") return "error";
+    return (await decryptText(ws, got.body.data)) === null ? "wrong" : "open";
+  } catch {
+    return "error";
+  }
+}
+
 export const SYNC_KEY = "open-receipt:sync:v1";
 export interface SyncMeta {
   ws: Workspace | null;
@@ -320,7 +335,7 @@ export function loadMeta(kv: { getItem(k: string): string | null }): SyncMeta {
     const d = JSON.parse(kv.getItem(SYNC_KEY) ?? "null");
     if (!d || typeof d !== "object") return { ...EMPTY_META };
     return {
-      ws: d.ws && typeof d.ws.id === "string" && typeof d.ws.key === "string" ? { id: d.ws.id, key: d.ws.key } : null,
+      ws: d.ws && typeof d.ws.id === "string" && typeof d.ws.key === "string" ? { id: d.ws.id, key: d.ws.key, ...(typeof d.ws.link === "string" && d.ws.link ? { link: d.ws.link } : {}) } : null,
       version: Number(d.version) || 0,
       uploaded: Array.isArray(d.uploaded) ? d.uploaded.map(String) : [],
       tombstones: d.tombstones && typeof d.tombstones === "object" ? d.tombstones : {},

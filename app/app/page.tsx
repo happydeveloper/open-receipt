@@ -56,9 +56,9 @@ import { addProject, BACKUP_KEY, backupAdvice, DEMO_SETTINGS, EMPTY_SETTINGS, lo
 import { filterExpenses, isFiltering, NO_FILTER, type ListFilter } from "@/lib/search";
 import { buildShare, encodeShare, LONG_LINK } from "@/lib/share";
 import { appendEntry, auditRecord, createIdentity, diffEntries, loadLedger, members, mergeLedgers, recordsFingerprint, saveLedger, shortPrint, summarize, type Audit, type LedgerState, type LedgerSummary, type Problem } from "@/lib/ledger";
-import { EMPTY_META, httpApi, loadMeta, saveMeta, SYNC_KEY, syncNow, type SyncMeta } from "@/lib/sync-client";
+import { canOpen, EMPTY_META, httpApi, loadMeta, saveMeta, SYNC_KEY, syncNow, type SyncMeta } from "@/lib/sync-client";
 import { deviceMasked, deviceOriginals } from "@/lib/originals";
-import { inviteCode, newWorkspace, parseInvite, viewCode, viewerWorkspace, type Workspace } from "@/lib/sync-crypto";
+import { inviteCode, isLocked, newLockedWorkspace, newWorkspace, parseInvite, passwordProblem, unlockInvite, viewCode, viewerWorkspace, type Workspace } from "@/lib/sync-crypto";
 import { touchChanged } from "@/lib/sync-merge";
 import { approvalBlock, approveExpense, attachEvidence, confirmExpense, returnExpense, detachEvidence, duplicateIds, evidenceMissing, findDuplicates, missingFields, needsAttention, newExpense, openItems, reconfirmExpense, withStatus, type Actor } from "@/lib/status";
 import { hydrateImages, loadExpenses, resetToSeed, saveExpenses, STORAGE_KEY } from "@/lib/storage";
@@ -296,6 +296,11 @@ export default function Home() {
   const [syncNote, setSyncNote] = useState("");
   const [joinWs, setJoinWs] = useState<Workspace | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
+  // 단체 공간 암호: 만들 때 정하는 암호, 참여할 때 넣는 암호. 기기 밖으로 나가지 않고 저장하지도 않는다.
+  const [wsPass, setWsPass] = useState("");
+  const [wsPassErr, setWsPassErr] = useState("");
+  const [joinPass, setJoinPass] = useState("");
+  const [joining, setJoining] = useState(false);
   const [viewerLink, setViewerLink] = useState("");
   // 여러 장 한꺼번에 올리기
   const [bulk, setBulk] = useState<BulkItem[]>([]);
@@ -768,7 +773,11 @@ export default function Home() {
     setMeta(EMPTY_META); live.current.meta = EMPTY_META; setSyncNote(""); setConfirmLeave(false);
   }
   async function createWorkspace() {
-    const ws = newWorkspace();
+    // 암호를 적었으면 암호로 잠근 공간을 만든다. 열쇠가 링크와 암호 둘로 만들어져, 링크만으로는 열 수 없다.
+    const problem = wsPass.trim() ? passwordProblem(wsPass) : "";
+    if (problem) return setWsPassErr(problem);
+    const ws = wsPass.trim() ? await newLockedWorkspace(wsPass) : newWorkspace();
+    setWsPass(""); setWsPassErr("");
     keepMeta({ ...EMPTY_META, ws, sharedAt: new Date().toISOString() });
     await doSync(ws);
   }
@@ -776,12 +785,28 @@ export default function Home() {
     if (!joinWs) return;
     const name = draft.submitter.trim();
     if (!name) return setErr("내 이름을 입력해 주세요.");
+    let ws = joinWs;
+    if (isLocked(joinWs)) {
+      // 암호로 잠근 공간: 암호가 맞는지 서버의 기록을 풀어 확인한 뒤에야 참여한다.
+      if (!joinPass.trim()) return setErr("단체 공간 암호를 입력해 주세요.");
+      setJoining(true);
+      try {
+        ws = await unlockInvite(joinWs, joinPass);
+        const opened = await canOpen(ws, httpApi());
+        if (opened === "wrong") return setErr("암호가 맞지 않습니다. 초대한 사람에게 암호를 다시 확인해 주세요.");
+        if (opened === "none") return setErr("아직 만들어지지 않았거나 없어진 단체 공간입니다. 초대 링크를 다시 받아 주세요.");
+        if (opened === "error") return setErr("단체 공간에 연결하지 못했습니다. 잠시 뒤 다시 시도해 주세요.");
+      } finally {
+        setJoining(false);
+      }
+      setJoinPass("");
+    }
     const st: Settings = { ...live.current.settings, submitter: name, role: draft.approver === "approver" ? "approver" : "submitter", onboarded: true };
     setSettings(st); live.current.settings = st; saveSettings(window.localStorage, st);
-    keepMeta({ ...EMPTY_META, ws: joinWs });
+    keepMeta({ ...EMPTY_META, ws });
     window.history.replaceState(null, "", window.location.pathname);
     setErr(""); setJoinWs(null); go("list");
-    await doSync(joinWs);
+    await doSync(ws);
   }
   const inviteLink = meta.ws && typeof window !== "undefined" ? `${window.location.origin}/app#${inviteCode(meta.ws)}` : "";
   function loadDemo() {
@@ -1047,19 +1072,22 @@ export default function Home() {
         <Frame title="단체 공간 참여">
           <VStack gap={2}>
             <Heading level={2}>초대받은 단체 공간에 참여합니다</Heading>
-            <Text>참여하면 이 단체의 지출 기록을 이 기기에서도 보고, 올리고, 승인할 수 있습니다. 기록은 암호화되어 오가며 초대 링크를 가진 사람만 볼 수 있습니다.</Text>
+            <Text>{isLocked(joinWs)
+              ? "참여하면 이 단체의 지출 기록을 이 기기에서도 보고, 올리고, 승인할 수 있습니다. 암호로 잠긴 공간이라, 초대한 사람에게 받은 암호를 넣어야 열립니다."
+              : "참여하면 이 단체의 지출 기록을 이 기기에서도 보고, 올리고, 승인할 수 있습니다. 기록은 암호화되어 오가며 초대 링크를 가진 사람만 볼 수 있습니다."}</Text>
           </VStack>
           {err ? <Banner status="error" title={err} /> : null}
           {list.length > 0 ? <Banner status="warning" title={`이 기기에 있던 기록 ${list.length}건도 단체 공간에 합쳐집니다.`} /> : null}
           <TextInput id="j-name" label="내 이름" value={draft.submitter} placeholder="예: 박대표" onChange={(v) => setDraft((d) => ({ ...d, submitter: v }))} />
+          {isLocked(joinWs) ? <TextInput id="j-pass" type="password" label="단체 공간 암호" value={joinPass} onChange={setJoinPass} /> : null}
           <SegmentedControl label="내 역할" layout="fill" value={draft.approver === "approver" ? "approver" : "submitter"} onChange={(v) => setDraft((d) => ({ ...d, approver: v }))}>
             <SegmentedControlItem value="submitter" label="기록을 올리는 사람" />
             <SegmentedControlItem value="approver" label="승인하는 사람" />
           </SegmentedControl>
           <Note>승인하는 사람으로 참여하면 승인할 때 내 이름이 승인자로 기록됩니다.</Note>
           <VStack className="grow" />
-          <Main label="참여하기" onClick={joinWorkspace} />
-          <Sub label="참여하지 않기" onClick={() => { window.history.replaceState(null, "", window.location.pathname); setJoinWs(null); setErr(""); if (settings.onboarded || list.length) go("list"); }} />
+          <Main label={joining ? "확인하는 중…" : "참여하기"} isDisabled={joining} onClick={joinWorkspace} />
+          <Sub label="참여하지 않기" onClick={() => { window.history.replaceState(null, "", window.location.pathname); setJoinWs(null); setJoinPass(""); setErr(""); if (settings.onboarded || list.length) go("list"); }} />
         </Frame>
       );
     }
@@ -1197,7 +1225,10 @@ export default function Home() {
           <VStack gap={3}>
             <Heading level={3}>단체 공간 (기기 간 공유)</Heading>
             {meta.ws ? <>
-              <Note>초대 링크를 받은 사람은 자기 기기에서 같은 기록을 보고, 올리고, 승인할 수 있습니다. 기록은 기기에서 암호화되어 오가므로 서버는 내용을 읽을 수 없습니다. 링크를 가진 사람은 누구나 참여할 수 있으니 단체 사람에게만 보내세요.</Note>
+              <Note>초대 링크를 받은 사람은 자기 기기에서 같은 기록을 보고, 올리고, 승인할 수 있습니다. 기록은 기기에서 암호화되어 오가므로 서버는 내용을 읽을 수 없습니다.</Note>
+              {isLocked(meta.ws)
+                ? <Banner status="success" title="암호로 잠긴 공간입니다" description="초대 링크와 암호를 둘 다 알아야 참여할 수 있습니다. 암호는 링크와 다른 길(전화, 만나서)로 알려 주세요. 암호는 어디에도 저장되지 않아 이 화면에서 다시 볼 수 없습니다." data-testid="ws-locked" />
+                : <Banner status="warning" title="암호 없는 공간입니다" description="초대 링크를 가진 사람은 누구나 참여할 수 있으니 단체 사람에게만 보내세요. 암호를 걸려면 이 기기의 연결을 끊고 암호를 정해 단체 공간을 새로 만든 뒤, 새 초대 링크를 보내면 됩니다. 이 기기의 기록은 새 공간으로 올라갑니다." data-testid="ws-open" />}
               <TextInput id="invite-link" label="초대 링크" isReadOnly value={inviteLink} onChange={() => {}} />
               <HStack gap={2}>
                 <Sub label="초대 링크 복사" onClick={async () => { try { await navigator.clipboard.writeText(inviteLink); setSyncNote("초대 링크를 복사했습니다."); } catch { setSyncNote("복사하지 못했습니다. 링크를 직접 선택해 복사해 주세요."); } }} />
@@ -1230,6 +1261,8 @@ export default function Home() {
               {confirmLeave ? <Note>연결을 끊어도 이 기기의 기록은 남습니다. 다시 참여하려면 초대 링크가 필요하니 먼저 복사해 두세요.</Note> : null}
             </> : <>
               <Note>총무와 승인자가 각자 기기에서 같은 기록을 쓰려면 단체 공간을 만드세요. 만든 뒤 나오는 초대 링크를 보내면 됩니다.</Note>
+              <TextInput id="ws-pass" type="password" label="단체 공간 암호 (선택)" value={wsPass} placeholder="6자 이상" status={wsPassErr ? { type: "error", message: wsPassErr } : undefined} onChange={(v) => { setWsPass(v); setWsPassErr(""); }} />
+              <Note>암호를 정하면 초대 링크와 암호를 둘 다 알아야 참여할 수 있어, 링크가 다른 곳으로 새어도 기록을 열거나 고칠 수 없습니다. 암호는 서버에 보내지 않고 저장하지도 않습니다. 잊으면 되찾을 수 없으니 따로 적어 두세요.</Note>
               <Sub label={syncing ? "만드는 중…" : "단체 공간 만들기"} isDisabled={syncing} onClick={createWorkspace} />
               {syncNote ? <Note>{syncNote}</Note> : null}
             </>}
