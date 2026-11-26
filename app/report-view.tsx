@@ -15,7 +15,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useEffect, useRef, useState } from "react";
 import { shortPrint } from "@/lib/ledger";
-import { won, type Report } from "@/lib/report";
+import { spendRate, won, type Report } from "@/lib/report";
 
 const num = (v: string) => <Text hasTabularNumbers textWrap="nowrap">{v}</Text>;
 const Note = ({ children }: { children: React.ReactNode }) => <Text type="supporting" color="secondary" display="block">{children}</Text>;
@@ -40,11 +40,28 @@ export function ReportBody({ r, detail = true }: { r: Report; detail?: boolean }
         />
       </VStack>
       <Heading level={2}>2. 예산 항목별 집행</Heading>
-      <Table
-        idKey="name"
-        data={[...r.byCategory.map((g) => ({ name: g.name, count: `${g.count}건`, amount: won(g.amount) })), { name: "합계", count: `${r.count}건`, amount: won(r.total) }]}
-        columns={[{ key: "name", header: "예산 항목" }, { key: "count", header: "건수", align: "end" }, amountCol]}
-      />
+      {r.budgetTotal ? (
+        // 예산을 정해 두었으면 쓴 돈을 예산과 견줘 보여 준다. 예산을 넘은 항목도 판정 없이 숫자만 보인다.
+        <VStack className="scroll-x wide-table" data-testid="budget-table">
+          <Table
+            idKey="name"
+            data={[
+              ...r.byCategory.map((g) => ({ name: g.name, count: `${g.count}건`, amount: won(g.amount), budget: g.budget ? won(g.budget) : "-", rate: spendRate(g.amount, g.budget) || "-", left: g.budget ? won(g.budget - g.amount) : "-" })),
+              { name: "합계", count: `${r.count}건`, amount: won(r.total), budget: won(r.budgetTotal), rate: spendRate(r.total, r.budgetTotal), left: won(r.budgetTotal - r.total) },
+            ]}
+            columns={[
+              { key: "name", header: "예산 항목" }, { key: "count", header: "건수", align: "end" }, { key: "amount", header: "쓴 금액", align: "end", renderCell: (x) => num(x.amount) },
+              { key: "budget", header: "예산", align: "end", renderCell: (x) => num(x.budget) }, { key: "rate", header: "집행률", align: "end", renderCell: (x) => num(x.rate) }, { key: "left", header: "남은 금액", align: "end", renderCell: (x) => num(x.left) },
+            ]}
+          />
+        </VStack>
+      ) : (
+        <Table
+          idKey="name"
+          data={[...r.byCategory.map((g) => ({ name: g.name, count: `${g.count}건`, amount: won(g.amount) })), { name: "합계", count: `${r.count}건`, amount: won(r.total) }]}
+          columns={[{ key: "name", header: "예산 항목" }, { key: "count", header: "건수", align: "end" }, amountCol]}
+        />
+      )}
       <Heading level={2}>3. 결제 방식별 집행</Heading>
       <Table
         idKey="name"

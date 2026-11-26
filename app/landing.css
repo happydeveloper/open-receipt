@@ -5,6 +5,7 @@
 .lp-nav { position: sticky; top: 0; z-index: 5; background: var(--color-background-surface); border-bottom: 1px solid var(--color-border); }
 .lp-nav .lp-wrap { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-3); padding-block: var(--spacing-3); }
 .lp-brand { display: flex; align-items: center; gap: var(--spacing-2); font-weight: var(--font-weight-semibold); font-size: var(--font-size-lg); }
+.lp-beta { font-size: var(--font-size-xs); font-weight: var(--font-weight-semibold); color: var(--color-text-success); border: 1px solid currentColor; border-radius: var(--radius-full); padding: 0 var(--spacing-2); line-height: 1.6; }
 .lp-brand img { width: 32px; height: 32px; border-radius: var(--radius-element); }
 .lp-nav-links { display: flex; gap: var(--spacing-2); align-items: center; }
 .lp section { padding-block: var(--spacing-12); }

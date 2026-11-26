@@ -54,6 +54,25 @@ export async function decryptText(ws: Workspace, payload: string): Promise<strin
     return null;
   }
 }
+/* ---------- 압축 ---------- */
+async function through(bytes: Uint8Array, stream: TransformStream<Uint8Array, Uint8Array>): Promise<Uint8Array> {
+  const out = new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(stream));
+  return new Uint8Array(await out.arrayBuffer());
+}
+const PACKED = "z1:";
+/**
+ * 글을 압축한다 (deflate). 기록 문서는 같은 낱말이 되풀이되는 JSON이라 몇 분의 일로 줄어든다.
+ * 서버가 한 번에 받는 크기가 정해져 있어, 줄인 만큼 더 많은 기록을 담을 수 있다. 암호화하기 전에 한다.
+ */
+export async function packText(text: string): Promise<string> {
+  return PACKED + b64(await through(new TextEncoder().encode(text), new CompressionStream("deflate-raw") as any));
+}
+/** packText의 반대. 압축하지 않은 예전 글은 그대로 돌려준다. */
+export async function unpackText(text: string): Promise<string> {
+  if (!text.startsWith(PACKED)) return text;
+  return new TextDecoder().decode(await through(unb64(text.slice(PACKED.length)), new DecompressionStream("deflate-raw") as any));
+}
+
 /** 쓰기 권한 증표. 열쇠에서 만들며, 서버는 이것의 해시만 보관해 열쇠를 가진 사람만 쓸 수 있게 한다. */
 export async function writeToken(ws: Workspace): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`open-receipt-write:${ws.key}`));

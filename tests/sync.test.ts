@@ -4,10 +4,10 @@
  * 원본 영수증 공유, 후원자 열쇠의 권한 범위.
  */
 import { describe, expect, it } from "vitest";
-import { decryptText, encryptText, inviteCode, newWorkspace, parseInvite, parseViewCode, viewCode, viewerWorkspace, writeToken } from "@/lib/sync-crypto";
+import { decryptText, encryptText, packText, unpackText, inviteCode, newWorkspace, parseInvite, parseViewCode, viewCode, viewerWorkspace, writeToken } from "@/lib/sync-crypto";
 import { memoryBag } from "@/lib/originals";
 import type { ViewBundle } from "@/lib/sponsor-view";
-import { IMAGE_REF, mergeExpenses, stripImages, touchChanged } from "@/lib/sync-merge";
+import { IMAGE_REF, mergeExpenses, slimGuidance, stripImages, touchChanged } from "@/lib/sync-merge";
 import { syncNow, SyncError, type SyncApi, type SyncLocal } from "@/lib/sync-client";
 import { clearViewImages, delImage, getDoc, getImage, getView, MemoryStore, purgeRecordImages, putDoc, putImage, putView, type SyncStore } from "@/lib/sync-store";
 import { demoSnackExpense, seedExpenses } from "@/lib/seed";
@@ -22,7 +22,7 @@ const BIG = "data:image/jpeg;base64," + "A".repeat(600);
 function api(store: SyncStore | null): SyncApi {
   const out = async (r: Response) => ({ status: r.status, body: await r.json() });
   return {
-    getDoc: async (id) => out(await getDoc(store, id)),
+    getDoc: async (id, since) => out(await getDoc(store, id, since)),
     putDoc: async (id, token, body) => out(await putDoc(store, id, token, body)),
     getImage: async (id, eid, kind) => out(await getImage(store, id, eid, kind)),
     putImage: async (id, eid, token, body, kind) => out(await putImage(store, id, eid, token, body, kind)),
@@ -113,7 +113,8 @@ describe("두 기기 동기화", () => {
     // 승인자가 승인하고 올린다
     const approved = at(approveExpense(b1.expenses[0], "박대표", "2026-11-20T11:05:00.000Z"), "2026-11-20T11:05:00.000Z");
     const b2 = await syncNow(ws, { ...b1, expenses: [approved] }, api(store), "2026-11-20T11:06:00.000Z");
-    expect(b2.version).toBe(3);
+    expect(b1.version).toBe(1); // 참여만 하고 바꾼 것이 없으면 문서를 다시 올리지 않는다
+    expect(b2.version).toBe(2);
 
     // 총무 기기가 다시 동기화하면 승인이 반영된다. 이미지는 다시 올리지 않는다.
     const before = store.data.size;
@@ -201,6 +202,127 @@ describe("두 기기 동기화", () => {
     const e = { ...demoSnackExpense(), evidence: { kind: "receipt" as const, image: BIG } };
     expect(stripImages([e])[0].evidence.image).toBe(IMAGE_REF);
     expect(stripImages(seedExpenses())[0].evidence.image).not.toBe(IMAGE_REF); // 시드의 작은 자리표시 이미지는 그대로
+  });
+});
+
+describe("저장소 호출 줄이기", () => {
+  /** 저장소를 감싸 어떤 일을 몇 번 시켰는지 센다. 목록 조회와 쓰기는 저장소가 엄격히 세는 일이다. */
+  function counting(store: MemoryStore) {
+    const n = { get: 0, put: 0, list: 0, del: 0 };
+    const wrapped: SyncStore = {
+      get: (k) => { n.get++; return store.get(k); },
+      put: (k, v) => { n.put++; return store.put(k, v); },
+      putNew: (k, v) => { n.put++; return store.putNew(k, v); },
+      list: (p) => { n.list++; return store.list(p); },
+      del: (k) => { n.del++; return store.del(k); },
+    };
+    return { n, wrapped, reset: () => { n.get = n.put = n.list = n.del = 0; } };
+  }
+  const snack = () => at({ ...demoSnackExpense(), evidence: { kind: "receipt" as const, image: BIG } }, "2026-11-20T10:00:00.000Z");
+
+  it("바뀐 것이 없으면 다시 동기화해도 쓰지 않고 목록도 조회하지 않는다", async () => {
+    const c = counting(new MemoryStore());
+    const ws = newWorkspace();
+    const a1 = await syncNow(ws, device([snack()]), api(c.wrapped), "2026-11-20T10:01:00.000Z");
+    c.reset();
+    const a2 = await syncNow(ws, a1, api(c.wrapped), "2026-11-20T10:02:00.000Z");
+    expect(a2.version).toBe(a1.version);
+    expect(a2.changed).toBe(false);
+    expect(c.n).toEqual({ get: 2, put: 0, list: 0, del: 0 }); // 다음 버전이 있는지, 내가 아는 버전이 그대로인지
+  });
+
+  it("사진을 올릴 때 목록을 조회하지 않고, 기록 하나를 고치면 쓰기는 문서 한 번뿐이다", async () => {
+    const c = counting(new MemoryStore());
+    const ws = newWorkspace();
+    const a1 = await syncNow(ws, device([snack()]), api(c.wrapped), "2026-11-20T10:01:00.000Z");
+    // 처음 만들 때: 문서, 쓰기 증표 파일, 사진 한 장
+    expect(c.n.put).toBe(3);
+    c.reset();
+    const edited = at({ ...a1.expenses[0], purpose: "고친 목적" }, "2026-11-20T10:05:00.000Z");
+    const a2 = await syncNow(ws, { ...a1, expenses: [edited] }, api(c.wrapped), "2026-11-20T10:06:00.000Z");
+    expect(a2.version).toBe(a1.version + 1);
+    expect(c.n.put).toBe(1);
+    expect(c.n.list).toBe(0);
+  });
+
+  it("다른 기기가 바꿨으면 목록 없이 다음 버전을 받아 온다. 많이 뒤처졌으면 목록으로 찾는다", async () => {
+    const c = counting(new MemoryStore());
+    const ws = newWorkspace();
+    const a1 = await syncNow(ws, device([snack()]), api(c.wrapped), "2026-11-20T10:01:00.000Z");
+    let b = await syncNow(ws, device([]), api(c.wrapped), "2026-11-20T10:02:00.000Z");
+    b = await syncNow(ws, { ...b, expenses: [at({ ...b.expenses[0], amount: 1 }, "2026-11-20T10:03:00.000Z")] }, api(c.wrapped), "2026-11-20T10:03:00.000Z");
+    c.reset();
+    const a2 = await syncNow(ws, a1, api(c.wrapped), "2026-11-20T10:04:00.000Z");
+    expect(a2.expenses[0].amount).toBe(1);
+    expect(c.n.list).toBe(0);
+    // 승인자 기기가 여덟 번 더 바꾼다 → 총무 기기가 아는 버전은 이미 지워졌다
+    for (let i = 2; i < 10; i++) b = await syncNow(ws, { ...b, expenses: [at({ ...b.expenses[0], amount: i }, `2026-11-20T11:0${i}:00.000Z`)] }, api(c.wrapped), `2026-11-20T11:0${i}:00.000Z`);
+    c.reset();
+    const a3 = await syncNow(ws, a2, api(c.wrapped), "2026-11-20T12:00:00.000Z");
+    expect(a3.expenses[0].amount).toBe(9);
+    expect(a3.version).toBe(b.version);
+    expect(c.n.list).toBe(1);
+  });
+
+  it("쓰기 증표 파일이 없는 예전 공간도 그대로 쓸 수 있고, 한 번 읽으면 파일이 만들어진다", async () => {
+    const store = new MemoryStore();
+    const ws = newWorkspace();
+    const a1 = await syncNow(ws, device([snack()]), api(store), "2026-11-20T10:01:00.000Z");
+    store.data.delete(`sync/${ws.id}/auth.json`); // 예전에 만든 공간처럼
+    const a2 = await syncNow(ws, { ...a1, expenses: [at({ ...a1.expenses[0], amount: 5 }, "2026-11-20T10:05:00.000Z")] }, api(store), "2026-11-20T10:06:00.000Z");
+    expect(a2.version).toBe(2);
+    expect(store.data.has(`sync/${ws.id}/auth.json`)).toBe(true);
+    // 열쇠가 다른 사람은 여전히 쓰지 못한다
+    await expect(syncNow({ ...ws, key: newWorkspace().key }, device([snack()]), api(store))).rejects.toThrow();
+  });
+});
+
+describe("더 많은 기록 담기", () => {
+  const guided = (i: number): Expense => at({
+    ...demoSnackExpense(), id: `e_${i}`, item: `행사 다과 ${i}`,
+    guidance: { query: "", searchedAt: "2026-11-20T10:00:00.000Z", checklist: [{ text: "개인 카드 선결제는 환급 이체 확인증을 함께 보관하세요.", sourceUrl: "https://example.go.kr/guide/1" }],
+      sources: Array.from({ length: 8 }, (_, k) => ({ title: `지원사업 회계 처리 안내 ${k}`, url: `https://example.go.kr/guide/${k}`, hostname: "example.go.kr", date: "2026-04-15", description: "보조금 집행 시 증빙서류는 지출결의서, 영수증, 참석자 명단을 갖추어야 한다. ".repeat(3) })) },
+  }, "2026-11-20T10:00:00.000Z");
+
+  it("압축한 글은 되돌리면 그대로이고, 압축하지 않은 예전 글도 읽는다", async () => {
+    const text = JSON.stringify(Array.from({ length: 30 }, (_, i) => guided(i)));
+    const packed = await packText(text);
+    expect(packed.startsWith("z1:")).toBe(true);
+    expect(packed.length).toBeLessThan(text.length / 4);
+    expect(await unpackText(packed)).toBe(text);
+    expect(await unpackText(text)).toBe(text);
+  });
+
+  it("문서에는 실제로 연결된 검색 결과만 싣고 긴 설명은 뺀다. 기기의 기록은 그대로다", () => {
+    const e = guided(1);
+    const [slim] = slimGuidance([e]);
+    expect(slim.guidance!.sources).toEqual([{ title: "지원사업 회계 처리 안내 1", url: "https://example.go.kr/guide/1", hostname: "example.go.kr", date: "2026-04-15", description: "" }]);
+    expect(slim.guidance!.checklist).toEqual(e.guidance!.checklist);
+    expect(e.guidance!.sources).toHaveLength(8);
+    const plain = at(demoSnackExpense(), "2026-11-20T10:00:00.000Z");
+    expect(slimGuidance([plain])[0]).toBe(plain);
+  });
+
+  it("기록 200건이 서버 한도의 일부만 채우고, 다른 기기가 그대로 받는다", async () => {
+    const store = new MemoryStore();
+    const ws = newWorkspace();
+    const many = Array.from({ length: 200 }, (_, i) => guided(i));
+    const a = await syncNow(ws, device(many), api(store), "2026-11-21T00:00:00.000Z");
+    expect(a.docUsage).toBeGreaterThan(0);
+    expect(a.docUsage).toBeLessThan(0.1);
+    const b = await syncNow(ws, device([]), api(store), "2026-11-21T00:01:00.000Z");
+    expect(b.expenses).toHaveLength(200);
+    expect(b.expenses.find((e) => e.id === "e_7")!.guidance!.checklist).toHaveLength(1);
+    expect(b.docUsage).toBe(0); // 받기만 했으니 올리지 않았다
+  });
+
+  it("압축하기 전에 만든 단체 공간의 문서도 읽는다", async () => {
+    const store = new MemoryStore();
+    const ws = newWorkspace();
+    const old = { v: 1, expenses: [at(demoSnackExpense(), "2026-11-20T10:00:00.000Z")], tombstones: {}, shared, sharedAt: "2026-11-01T00:00:00.000Z" };
+    await putDoc(store, ws.id, await writeToken(ws), { baseVersion: 0, data: await encryptText(ws, JSON.stringify(old)) });
+    const b = await syncNow(ws, device([]), api(store), "2026-11-21T00:01:00.000Z");
+    expect(b.expenses.map((e) => e.id)).toEqual(["demo-snack"]);
   });
 });
 

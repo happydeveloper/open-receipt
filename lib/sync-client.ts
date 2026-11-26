@@ -7,12 +7,13 @@ import { mergeLedgers, recordsFingerprint, summarize, type Ledger, type Problem 
 import type { ImageBag } from "./originals";
 import { photosOf, slotsOf } from "./photos";
 import { buildViewBundle, viewImages } from "./sponsor-view";
-import { decryptText, encryptText, viewerWorkspace, writeToken, type Workspace } from "./sync-crypto";
-import { IMAGE_REF, imagesOf, mergeExpenses, restoreImages, stripImages, type SharedSettings, type SyncDoc, type Tombstones } from "./sync-merge";
+import { decryptText, encryptText, packText, unpackText, viewerWorkspace, writeToken, type Workspace } from "./sync-crypto";
+import { clampFuture, DOC_LIMIT, IMAGE_REF, imagesOf, mergeExpenses, restoreImages, slimGuidance, stripImages, type SharedSettings, type SyncDoc, type Tombstones } from "./sync-merge";
 import type { Expense } from "./types";
 
 export interface SyncApi {
-  getDoc(id: string): Promise<{ status: number; body: any }>;
+  /** since: 이 기기가 마지막으로 본 버전. 그 뒤로 바뀐 것이 없으면 서버는 { unchanged: true }만 돌려준다 */
+  getDoc(id: string, since?: number): Promise<{ status: number; body: any }>;
   putDoc(id: string, token: string, body: unknown): Promise<{ status: number; body: any }>;
   getImage(id: string, eid: string, kind?: "img" | "orig" | "view"): Promise<{ status: number; body: any }>;
   putImage(id: string, eid: string, token: string, body: unknown, kind?: "img" | "orig" | "view"): Promise<{ status: number; body: any }>;
@@ -32,6 +33,8 @@ export interface SyncLocal {
   sharedAt: string;
   /** 이미 올린 이미지 표식 (기록 id:길이) */
   uploaded: string[];
+  /** 이 기기가 마지막으로 맞춘 문서 버전 */
+  version?: number;
   /** 이 기기가 가진 서명 원장 사본 */
   ledger?: Ledger;
 }
@@ -47,6 +50,15 @@ export interface SyncResult extends SyncLocal {
   missingImages: number;
   /** 두 기기의 수정이 섞여 새로 만들어진 기록의 id. 이 기기가 그 내용에 서명해 둔다 */
   mergedIds: string[];
+  /** 이번 동기화로 다른 기기에서 들어온 소식: 새로 들어온 기록과 올린 사람, 새로 승인된 기록과 승인한 사람 */
+  news: { added: number; addedBy: string[]; approved: number; approvedBy: string[]; returned: number; returnedBy: string[] };
+  /**
+   * 서버 시계와 이 기기 시계의 차이(ms). 양수면 기기 시계가 느린 것이다. 30초 안쪽이면 0으로 본다.
+   * 기기는 기록을 고칠 때 이만큼 보정한 시각을 찍는다.
+   */
+  clockOffset: number;
+  /** 이번에 올린 문서가 서버 한도의 얼마를 채웠는지 (0~1). 올리지 않았으면 0 */
+  docUsage: number;
   /** 이번에 올리려다 실패한 사진 수 (너무 크거나 서버가 받지 않음). 다음 동기화 때 다시 시도한다 */
   failedUploads: number;
 }
@@ -54,11 +66,17 @@ export class SyncError extends Error {}
 
 /** 후원자용 보기를 닫고 서버의 사진을 지웠다는 표식 */
 const VIEW_CLEARED = "view-cleared";
+/** 마지막으로 서버와 맞춘 문서 내용의 지문을 적어 두는 표식의 머리말 */
+const DOC = "doc:";
+async function sha256Hex(text: string): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  return [...d].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 /** 지운 기록의 사진을 서버에서 지웠다는 표식의 머리말 */
 const GONE = "gone:";
 /** 올렸다는 표식에서 사진 이름을 꺼낸다. 사진 표식이 아니면 null. 표식은 "이름:길이"(가린 사진), "o:이름"(원본), "v:이름:길이"(후원자용)다. */
 function photoKeyOfMark(u: string): string | null {
-  if (u.startsWith("view:") || u.startsWith(GONE) || !u.includes(":")) return null;
+  if (u.startsWith("view:") || u.startsWith(GONE) || u.startsWith(DOC) || !u.includes(":")) return null;
   if (u.startsWith("o:")) return u.slice(2);
   if (u.startsWith("v:")) return u.slice(2, u.lastIndexOf(":"));
   return u.slice(0, u.lastIndexOf(":"));
@@ -68,21 +86,40 @@ const uniq = (list: string[]) => [...new Set(list.map((s) => s.trim()).filter(Bo
 
 export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now = new Date().toISOString(), originals?: ImageBag): Promise<SyncResult> {
   const token = await writeToken(ws);
+  let docUsage = 0;
+  let clockOffset = 0;
   for (let attempt = 0; attempt < 4; attempt++) {
-    const got = await api.getDoc(ws.id);
+    // 첫 시도에는 마지막으로 본 버전을 알려 준다. 그 뒤로 서버가 그대로면 문서를 다시 받지 않는다.
+    const got = await api.getDoc(ws.id, attempt === 0 ? local.version ?? 0 : 0);
     let remote: SyncDoc = { v: 1, expenses: [], tombstones: {}, shared: local.shared, sharedAt: "" };
     let version = 0;
-    if (got.status === 200) {
-      const text = await decryptText(ws, got.body.data);
+    let remoteText = "";
+    const unchanged = got.status === 200 && got.body.unchanged === true;
+    // 서버 시각을 받은 순간의 기기 시각과 견줘, 이 기기의 시계가 얼마나 틀렸는지 잰다.
+    const serverNow = typeof got.body?.now === "string" ? got.body.now : "";
+    if (serverNow) {
+      const diff = Date.parse(serverNow) - Date.now();
+      clockOffset = Math.abs(diff) > 30_000 ? diff : 0;
+    }
+    if (unchanged) {
+      // 서버가 내가 마지막으로 맞춘 그대로다. 그때의 내용은 이미 내 기록에 들어 있으므로 합칠 것이 없다.
+      version = got.body.version;
+    } else if (got.status === 200) {
+      const sealed = await decryptText(ws, got.body.data);
+      const text = sealed === null ? null : await unpackText(sealed);
       if (text === null) throw new SyncError("이 초대 링크로는 단체 공간을 열 수 없습니다. 링크를 다시 받아 주세요.");
       remote = JSON.parse(text) as SyncDoc;
+      remoteText = text;
       version = got.body.version;
     } else if (got.status !== 404) {
       throw new SyncError(got.body?.error || "단체 공간에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.");
     }
 
     const have = imagesOf(local.expenses);
-    const merged = mergeExpenses(local.expenses, restoreImages(remote.expenses, have), local.tombstones, remote.tombstones);
+    // 시계가 빠른 기기가 찍은 "미래"의 시각은 서버의 지금으로 끌어내린 뒤 합친다.
+    const mine = serverNow ? clampFuture(local.expenses, serverNow) : local.expenses;
+    const theirs = serverNow ? clampFuture(remote.expenses, serverNow) : remote.expenses;
+    const merged = mergeExpenses(mine, restoreImages(theirs, have), local.tombstones, remote.tombstones);
     const remoteNewer = (Date.parse(remote.sharedAt) || 0) > (Date.parse(local.sharedAt) || 0);
     const base = remoteNewer ? remote.shared : local.shared;
     const shared: SharedSettings = { ...base, projects: uniq([...base.projects, ...(remoteNewer ? local.shared.projects : remote.shared.projects)]) };
@@ -91,13 +128,22 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
     // 원장: 받은 사본을 검증해 합친다. 내 사본이 더 길면 내 것이 올라가 다른 기기가 따라잡는다.
     const led = await mergeLedgers(local.ledger ?? {}, remote.ledger ?? {});
 
-    const doc: SyncDoc = { v: 1, expenses: stripImages(merged.expenses), tombstones: merged.tombstones, shared, sharedAt, ledger: led.ledger };
-    const put = await api.putDoc(ws.id, token, { baseVersion: version, data: await encryptText(ws, JSON.stringify(doc)) });
+    const doc: SyncDoc = { v: 1, expenses: slimGuidance(stripImages(merged.expenses)), tombstones: merged.tombstones, shared, sharedAt, ledger: led.ledger };
+    // 바뀐 것이 없으면 올리지 않는다. 예전에는 동기화할 때마다 문서를 통째로 다시 올렸다.
+    const docText = JSON.stringify(doc);
+    const docMark = `${DOC}${await sha256Hex(docText)}`;
+    const uploaded = new Set(local.uploaded);
+    const same = unchanged ? uploaded.has(docMark) : remoteText !== "" && remoteText === docText;
+    // 압축한 뒤 암호화한다. 얼마나 찼는지도 재어 둔다 (한도에 가까워지면 화면이 미리 알린다).
+    const sealedDoc = same ? "" : await encryptText(ws, await packText(docText));
+    if (!same) docUsage = sealedDoc.length / DOC_LIMIT;
+    const put = same ? { status: 200, body: { version } } : await api.putDoc(ws.id, token, { baseVersion: version, data: sealedDoc });
     if (put.status === 409) continue;
     if (put.status !== 200) throw new SyncError(put.body?.error || "단체 공간에 저장하지 못했습니다.");
+    for (const u of [...uploaded]) if (u.startsWith(DOC)) uploaded.delete(u);
+    uploaded.add(docMark);
 
     // 이미지: 아직 안 올린 것은 올리고, 이 기기에 없는 것은 받는다.
-    const uploaded = new Set(local.uploaded);
     let expenses = merged.expenses;
     // 영수증과 함께 묶은 자료(거래명세서 등)를 사진 이름별로 하나씩 다룬다.
     let failedUploads = 0;
@@ -167,8 +213,8 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
     const prints: Record<string, string> = {};
     if (viewOn) for (const p of new Set(expenses.map((e) => e.project).filter(Boolean))) prints[p] = await recordsFingerprint(expenses.filter((e) => e.project === p));
     const proof = viewOn ? { ledger: await summarize(led.ledger), prints } : undefined;
-    const bundle = buildViewBundle(expenses, shared.org, { enabled: viewOn, showNames: shared.sponsorNames === true }, now, proof);
-    const bundleSig = `view:${JSON.stringify({ ...bundle, publishedAt: "" }).length}:${viewOn}:${JSON.stringify(bundle.projects.map((p) => [p.project, p.report.total, p.report.count, p.receipts.length, p.report.openItems.length, p.report.approvedTotal]))}`;
+    const bundle = buildViewBundle(expenses, shared.org, { enabled: viewOn, showNames: shared.sponsorNames === true, budgets: shared.budgets }, now, proof);
+    const bundleSig = `view:${JSON.stringify({ ...bundle, publishedAt: "" }).length}:${viewOn}:${JSON.stringify(bundle.projects.map((p) => [p.project, p.report.total, p.report.count, p.receipts.length, p.report.openItems.length, p.report.approvedTotal, p.report.budgetTotal, p.report.byCategory.map((c) => c.budget ?? 0).join(",")]))}`;
     const hadView = [...uploaded].some((u) => u.startsWith("view:"));
     if ((viewOn || hadView) && !uploaded.has(bundleSig)) {
       const viewer = await viewerWorkspace(ws);
@@ -211,10 +257,21 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
       }
     }
 
+    // 다른 사람이 올린 기록과 다른 사람이 한 승인을 추린다. 화면이 "누가 무엇을 올렸다"고 알릴 수 있게.
+    const before = new Map(local.expenses.map((e) => [e.id, e]));
+    const names = (l: (string | undefined)[]) => [...new Set(l.map((n) => (n ?? "").trim()).filter(Boolean))];
+    const addedList = expenses.filter((e) => !before.has(e.id));
+    const approvedList = expenses.filter((e) => e.approvedBy && before.has(e.id) && !before.get(e.id)!.approvedBy);
+    const returnedList = expenses.filter((e) => e.returned && !e.confirmed && before.has(e.id) && before.get(e.id)!.returned?.at !== e.returned.at);
+    const news = {
+      added: addedList.length, addedBy: names(addedList.map((e) => e.submittedBy)),
+      approved: approvedList.length, approvedBy: names(approvedList.map((e) => e.approvedBy)),
+      returned: returnedList.length, returnedBy: names(returnedList.map((e) => e.returned?.by)),
+    };
     const sig = (l: Expense[]) => JSON.stringify([...l].sort((a, b) => a.id.localeCompare(b.id)));
     return {
       expenses, tombstones: merged.tombstones, shared, sharedAt, uploaded: [...uploaded], ledger: led.ledger, ledgerProblems: led.problems,
-      version: put.body.version, syncedAt: now, missingImages, failedUploads, mergedIds: merged.merged,
+      version: put.body.version, syncedAt: now, missingImages, failedUploads, docUsage, clockOffset, news, mergedIds: merged.merged,
       changed: sig(expenses) !== sig(local.expenses) || JSON.stringify(shared) !== JSON.stringify(local.shared),
     };
   }
@@ -233,7 +290,7 @@ export function httpApi(fetchImpl: typeof fetch = fetch): SyncApi {
   };
   const put = (url: string, token: string, body: unknown) => call(url, { method: "PUT", headers: { "Content-Type": "application/json", "x-write-token": token }, body: JSON.stringify(body) });
   return {
-    getDoc: (id) => call(`/api/sync/${id}`),
+    getDoc: (id, since = 0) => call(`/api/sync/${id}${since > 0 ? `?since=${since}` : ""}`),
     putDoc: (id, token, body) => put(`/api/sync/${id}`, token, body),
     getImage: (id, eid, kind = "img") => call(`/api/sync/${id}/img/${encodeURIComponent(eid)}?kind=${kind}`),
     putImage: (id, eid, token, body, kind = "img") => put(`/api/sync/${id}/img/${encodeURIComponent(eid)}?kind=${kind}`, token, body),
@@ -254,6 +311,8 @@ export interface SyncMeta {
   tombstones: Tombstones;
   sharedAt: string;
   syncedAt: string;
+  /** 서버 시계와의 차이(ms). 기록을 고칠 때 이만큼 보정한 시각을 찍는다 */
+  clockOffset?: number;
 }
 export const EMPTY_META: SyncMeta = { ws: null, version: 0, uploaded: [], tombstones: {}, sharedAt: "", syncedAt: "" };
 export function loadMeta(kv: { getItem(k: string): string | null }): SyncMeta {
@@ -267,6 +326,7 @@ export function loadMeta(kv: { getItem(k: string): string | null }): SyncMeta {
       tombstones: d.tombstones && typeof d.tombstones === "object" ? d.tombstones : {},
       sharedAt: typeof d.sharedAt === "string" ? d.sharedAt : "",
       syncedAt: typeof d.syncedAt === "string" ? d.syncedAt : "",
+      clockOffset: Number(d.clockOffset) || 0,
     };
   } catch {
     return { ...EMPTY_META };

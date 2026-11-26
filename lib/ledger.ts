@@ -229,7 +229,7 @@ export interface Audit {
  * 기록 한 건을 원장과 견준다.
  * 승인은 (1) 승인자 역할을 밝힌 기기가 서명했고 (2) 그 기기가 승인 전 내용을 올린 기기와 달라야 인정한다.
  */
-export async function auditRecord(e: Expense, ledger: Ledger): Promise<Audit> {
+export async function auditRecord(e: Expense, ledger: Ledger, policy: { submitterApproves?: boolean } = {}): Promise<Audit> {
   const digest = await recordDigest(e);
   const all = Object.values(ledger).flatMap((c) => c.entries).filter((x) => x.id === e.id);
   const hit = all.filter((x) => x.digest === digest).sort((a, b) => a.at.localeCompare(b.at));
@@ -239,11 +239,17 @@ export async function auditRecord(e: Expense, ledger: Ledger): Promise<Audit> {
   const approve = hit.find((x) => x.type === "approve");
   if (!approve) return { ...audit, approval: { ok: false, text: audit.signed ? "승인 서명 없이 승인된 상태로 올라온 기록입니다" : "승인 서명이 없습니다" } };
   const by = who(approve);
-  if (approve.role !== "approver") return { ...audit, approval: { ok: false, text: "승인자 역할이 아닌 기기가 승인했습니다", by } };
+  // 단체가 "등록자도 승인"으로 정했으면 등록자 기기의 승인과 직접 올린 지출의 승인을 받아들이되, 그렇다는 것을 글로 남긴다.
+  const open = policy.submitterApproves === true;
+  if (approve.role !== "approver" && !open) return { ...audit, approval: { ok: false, text: "승인자 역할이 아닌 기기가 승인했습니다", by } };
   const submitted = all.filter((x) => x.type === "record" && x.digest === approve.base);
   if (!submitted.length) return { ...audit, approval: { ok: false, text: "승인한 내용을 올린 서명이 원장에 없습니다", by } };
-  if (submitted.every((x) => x.key === approve.key)) return { ...audit, approval: { ok: false, text: "올린 기기와 승인한 기기가 같습니다", by } };
-  return { ...audit, approval: { ok: true, text: "승인 서명을 확인했습니다", by, submitter: who(submitted.find((x) => x.key !== approve.key)!) } };
+  if (submitted.every((x) => x.key === approve.key)) {
+    if (!open) return { ...audit, approval: { ok: false, text: "올린 기기와 승인한 기기가 같습니다", by } };
+    return { ...audit, approval: { ok: true, text: "올린 기기가 직접 승인했습니다", by, submitter: who(submitted[0]) } };
+  }
+  const text = approve.role === "approver" ? "승인 서명을 확인했습니다" : "등록자 기기가 승인했습니다";
+  return { ...audit, approval: { ok: true, text, by, submitter: who(submitted.find((x) => x.key !== approve.key)!) } };
 }
 
 export interface LedgerSummary {

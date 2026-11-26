@@ -49,7 +49,7 @@ export interface ViewBundle {
 const photoSlots = (e: Expense) => slotsOf(e).filter((s) => hasPhoto(s.image));
 
 /** 후원자에게 보일 자료 묶음. 꺼져 있으면 "닫힘" 표시만 담는다. 이름 표시는 lib/share.ts의 가림 규칙을 그대로 쓴다. */
-export function buildViewBundle(expenses: Expense[], org: string, opts: { enabled: boolean; showNames: boolean }, now = new Date().toISOString(), proof?: ViewProof): ViewBundle {
+export function buildViewBundle(expenses: Expense[], org: string, opts: { enabled: boolean; showNames: boolean; budgets?: Record<string, Record<string, number>> }, now = new Date().toISOString(), proof?: ViewProof): ViewBundle {
   if (!opts.enabled) return { v: 1, org, publishedAt: now, showNames: false, disabled: true, projects: [] };
   const names = [...new Set(expenses.map((e) => e.project).filter(Boolean))].sort();
   return {
@@ -60,7 +60,7 @@ export function buildViewBundle(expenses: Expense[], org: string, opts: { enable
     ledger: proof?.ledger,
     projects: names.map((project) => {
       const list = sortByDate(expenses.filter((e) => e.project === project));
-      const shared = buildShare(buildReport(expenses, project, now), org, { includeRows: true, showNames: opts.showNames }, now);
+      const shared = buildShare(buildReport(expenses, project, now, opts.budgets?.[project]), org, { includeRows: true, showNames: opts.showNames }, now);
       return {
         project,
         fingerprint: proof?.prints[project],

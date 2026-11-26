@@ -52,14 +52,15 @@ import { buildReport, reportPhotos, reportToHtml, won } from "@/lib/report";
 import { ReceiptGallery } from "../receipts";
 import { ReportBody } from "../report-view";
 import { DEMO_PROJECT } from "@/lib/seed";
-import { addProject, DEMO_SETTINGS, EMPTY_SETTINGS, loadSettings, makeBackup, missingForStart, parseBackup, saveSettings, SETTINGS_KEY, type Settings } from "@/lib/settings";
+import { addProject, BACKUP_KEY, backupAdvice, DEMO_SETTINGS, EMPTY_SETTINGS, loadSettings, makeBackup, missingForStart, normalizeBudgets, parseBackup, saveSettings, setBudget, SETTINGS_KEY, type Settings } from "@/lib/settings";
+import { filterExpenses, isFiltering, NO_FILTER, type ListFilter } from "@/lib/search";
 import { buildShare, encodeShare, LONG_LINK } from "@/lib/share";
 import { appendEntry, auditRecord, createIdentity, diffEntries, loadLedger, members, mergeLedgers, recordsFingerprint, saveLedger, shortPrint, summarize, type Audit, type LedgerState, type LedgerSummary, type Problem } from "@/lib/ledger";
 import { EMPTY_META, httpApi, loadMeta, saveMeta, SYNC_KEY, syncNow, type SyncMeta } from "@/lib/sync-client";
 import { deviceMasked, deviceOriginals } from "@/lib/originals";
 import { inviteCode, newWorkspace, parseInvite, viewCode, viewerWorkspace, type Workspace } from "@/lib/sync-crypto";
 import { touchChanged } from "@/lib/sync-merge";
-import { approvalBlock, approveExpense, attachEvidence, confirmExpense, detachEvidence, duplicateIds, evidenceMissing, findDuplicates, missingFields, needsAttention, newExpense, openItems, reconfirmExpense, withStatus, type Actor } from "@/lib/status";
+import { approvalBlock, approveExpense, attachEvidence, confirmExpense, returnExpense, detachEvidence, duplicateIds, evidenceMissing, findDuplicates, missingFields, needsAttention, newExpense, openItems, reconfirmExpense, withStatus, type Actor } from "@/lib/status";
 import { hydrateImages, loadExpenses, resetToSeed, saveExpenses, STORAGE_KEY } from "@/lib/storage";
 import { PAYMENT_LABEL, STATUS_LABEL, type ChecklistItem, type Expense, type PaymentMethod, type Source, type Status } from "@/lib/types";
 
@@ -75,6 +76,8 @@ const MANUAL = "직접 입력으로 계속할 수 있습니다.";
 const STATUS_COLOR: Record<Status, "green" | "orange" | "purple" | "gray"> = { done: "green", needs_evidence: "orange", pending_approval: "purple", draft: "gray" };
 const PAY_OPTIONS = (Object.keys(PAYMENT_LABEL) as PaymentMethod[]).map((p) => ({ value: p, label: PAYMENT_LABEL[p] }));
 const ALT_OPTIONS = ["이체확인증", "거래명세서", "사유서", "기타"].map((v) => ({ value: v, label: v }));
+// 목록을 상태로 거르는 선택지. 상태 이름표와 글자가 겹치지 않게 "만"을 붙인다.
+const STATUS_FILTERS = [{ value: "all", label: "상태: 전체" }, ...(Object.keys(STATUS_LABEL) as Status[]).map((s) => ({ value: s, label: `${STATUS_LABEL[s]}만` }))];
 const ATTACH_OPTIONS = ATTACH_LABELS.map((v) => ({ value: v, label: v }));
 
 const ASK_USER_TOOL = {
@@ -231,7 +234,8 @@ function Stat({ label, value }: { label: string; value: string }) {
     </Card>
   );
 }
-function Rows({ items, onOpen, dup }: { items: Expense[]; onOpen?: (e: Expense) => void; dup?: Set<string> }) {
+/** who를 주면(단체 공간) 줄마다 올린 사람을 함께 보여 준다. 여럿이 올린 지출이 섞여 있기 때문이다. */
+function Rows({ items, onOpen, dup, who }: { items: Expense[]; onOpen?: (e: Expense) => void; dup?: Set<string>; who?: boolean }) {
   return (
     <List hasDividers edge="flush">
       {items.map((e) => (
@@ -239,7 +243,7 @@ function Rows({ items, onOpen, dup }: { items: Expense[]; onOpen?: (e: Expense) 
           key={e.id}
           onClick={onOpen ? () => onOpen(e) : undefined}
           label={e.item || "항목 미입력"}
-          description={`${md(e.date)} · ${e.paymentMethod ? PAYMENT_LABEL[e.paymentMethod] : "결제 미입력"}${dup?.has(e.id) ? " · 중복 확인" : ""}`}
+          description={`${md(e.date)} · ${e.paymentMethod ? PAYMENT_LABEL[e.paymentMethod] : "결제 미입력"}${(e.amount ?? 0) < 0 ? " · 환불" : ""}${who && e.submittedBy ? ` · ${e.submittedBy}` : ""}${dup?.has(e.id) ? " · 중복 확인" : ""}`}
           endContent={
             <HStack gap={2} align="center">
               <Text hasTabularNumbers>{won(e.amount ?? 0)}</Text>
@@ -278,6 +282,14 @@ export default function Home() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [share, setShare] = useState({ rows: "rows", names: "hide", link: "", note: "" });
   const importRef = useRef<HTMLInputElement>(null);
+  const [lastBackupAt, setLastBackupAt] = useState("");
+  // 승인하는 사람이 되돌릴 때 적는 사유
+  const [returnReason, setReturnReason] = useState("");
+  // 목록에서 찾기와 거르기
+  const [filter, setFilter] = useState<ListFilter>(NO_FILTER);
+  // 설정의 예산 칸: 새 예산 항목 이름
+  const [newBudgetCat, setNewBudgetCat] = useState("");
+  const [extraCats, setExtraCats] = useState<string[]>([]);
   // 단체 공간 (기기 간 공유)
   const [meta, setMeta] = useState<SyncMeta>(EMPTY_META);
   const [syncing, setSyncing] = useState(false);
@@ -322,6 +334,7 @@ export default function Home() {
     return { me, ledger };
   });
   const [syncCount, setSyncCount] = useState(0);
+  const lastSyncAt = useRef(0);
   const [project, setProject] = useState(DEMO_PROJECT);
   const [step, setStep] = useState<Step>("upload");
   const [cur, setCur] = useState<Expense>(() => newExpense({ id: "blank" }));
@@ -329,6 +342,8 @@ export default function Home() {
   const [memo, setMemo] = useState("");
   const [raw, setRaw] = useState<string | null>(null);
   // PDF를 올렸을 때: 아직 붙이지 않은 나머지 쪽과, 지금 보고 있는 쪽 번호
+  // 금액을 아직 넣지 않았을 때 "환불"을 골라 둔 상태
+  const [refundMode, setRefundMode] = useState(false);
   const [morePages, setMorePages] = useState<string[]>([]);
   const [pdfPage, setPdfPage] = useState<{ no: number; total: number } | null>(null);
   // 지출에 함께 묶을 자료의 종류 (attach 단계)
@@ -364,6 +379,7 @@ export default function Home() {
     setSettings(st);
     setList(loaded);
     setMeta(loadMeta(window.localStorage));
+    try { setLastBackupAt(window.localStorage.getItem(BACKUP_KEY) ?? ""); } catch { /* 읽지 못하면 백업한 적 없는 것으로 본다 */ }
     if (st.projects[0]) setProject(st.projects[0]);
     // 초대 링크로 들어왔으면 참여 화면을, 처음 온 사람에게는 소개를 먼저 보여 준다.
     const invite = parseInvite(window.location.hash);
@@ -384,13 +400,18 @@ export default function Home() {
   }, []);
   live.current.list = list; live.current.settings = settings; live.current.meta = meta;
 
+  /**
+   * 기록에 찍을 지금 시각. 단체 공간을 쓰면 서버 시계에 맞춰 보정한다.
+   * 기기마다 시계가 조금씩 달라서, 그대로 찍으면 시계가 빠른 기기의 수정이 늘 이긴다.
+   */
+  const stampNow = () => new Date(Date.now() + (live.current.meta.ws ? live.current.meta.clockOffset ?? 0 : 0)).toISOString();
   const keepMeta = (m: SyncMeta) => { setMeta(m); live.current.meta = m; saveMeta(window.localStorage, m); };
   /** 단체 공간과 맞춘다. 받아서 합치고, 합친 것을 올린다. */
   async function doSync(ws: Workspace | null = live.current.meta.ws, quiet = false) {
     if (!ws) return;
     // 동기화 중에 또 요청이 오면, 끝난 뒤 한 번 더 돌린다 (그 사이의 변경을 놓치지 않도록).
     if (live.current.busy) { live.current.again = { quiet: quiet && (live.current.again?.quiet ?? true) }; return; }
-    live.current.busy = true; setSyncing(true);
+    live.current.busy = true; setSyncing(true); lastSyncAt.current = Date.now();
     try {
       await ledQueue.current; // 방금 바꾼 기록의 서명이 끝난 뒤에 올린다
       // 예전에 저장된 사진 가운데 서버가 받지 못할 만큼 큰 것은 올리기 전에 줄인다.
@@ -402,10 +423,16 @@ export default function Home() {
       }
       const { list: cur, settings: st, meta: m } = live.current;
       const out = await syncNow(ws, {
-        expenses: cur, tombstones: m.tombstones, uploaded: m.uploaded, sharedAt: m.sharedAt, ledger: live.current.led.ledger,
-        shared: { org: st.org, projects: st.projects, funder: st.funder, approver: st.approver, sponsorView: st.sponsorView, sponsorNames: st.sponsorNames },
+        expenses: cur, tombstones: m.tombstones, uploaded: m.uploaded, sharedAt: m.sharedAt, ledger: live.current.led.ledger, version: m.version,
+        shared: { org: st.org, projects: st.projects, funder: st.funder, approver: st.approver, sponsorView: st.sponsorView, sponsorNames: st.sponsorNames, submitterApproves: st.submitterApproves, budgets: st.budgets },
       }, httpApi(), undefined, fittedOriginals);
       if (out.changed) {
+        // 다른 사람이 올린 기록이나 승인이 들어왔으면 알린다. 조용히 도는 자동 동기화에서도 알린다.
+        const parts: string[] = [];
+        if (out.news.added) parts.push(`${out.news.addedBy.length ? `${out.news.addedBy.slice(0, 3).join(", ")} 님이 올린 ` : ""}지출 ${out.news.added}건이 들어왔습니다.`);
+        if (out.news.approved) parts.push(`${out.news.approvedBy.length ? `${out.news.approvedBy.slice(0, 3).join(", ")} 님이 ` : ""}${out.news.approved}건을 승인했습니다.`);
+        if (out.news.returned) parts.push(`${out.news.returnedBy.length ? `${out.news.returnedBy.slice(0, 3).join(", ")} 님이 ` : ""}${out.news.returned}건을 되돌렸습니다. 사유를 확인해 주세요.`);
+        if (parts.length) setToast(parts.join(" "));
         // 두 기기의 수정이 섞인 기록은 어느 기기도 서명한 적 없는 내용이다. 합친 이 기기가 서명해 둔다.
         if (out.mergedIds.length) {
           const mixed = new Map(out.expenses.filter((e) => out.mergedIds.includes(e.id)).map((e) => [e.id, e]));
@@ -413,16 +440,17 @@ export default function Home() {
         }
         setList(out.expenses); live.current.list = out.expenses;
         saveExpenses(window.localStorage, out.expenses, deviceMasked);
-        const nextSt: Settings = { ...live.current.settings, ...out.shared, sponsorView: out.shared.sponsorView === true, sponsorNames: out.shared.sponsorNames === true, onboarded: true };
+        const nextSt: Settings = { ...live.current.settings, ...out.shared, sponsorView: out.shared.sponsorView === true, sponsorNames: out.shared.sponsorNames === true, submitterApproves: out.shared.submitterApproves === true, budgets: normalizeBudgets(out.shared.budgets), onboarded: true };
         setSettings(nextSt); live.current.settings = nextSt; saveSettings(window.localStorage, nextSt);
         if (!out.shared.projects.includes(project) && out.shared.projects[0]) setProject(out.shared.projects[0]);
       }
       // 동기화하는 사이에 이 기기가 쓴 줄이 있을 수 있으니, 받은 원장을 지금 사본과 다시 합친다.
       await withLedger(async (cur2) => ({ me: cur2.me, ledger: (await mergeLedgers(cur2.ledger, out.ledger)).ledger }));
       setLedProblems(out.ledgerProblems);
-      keepMeta({ ws, version: out.version, uploaded: out.uploaded, tombstones: out.tombstones, sharedAt: out.sharedAt, syncedAt: out.syncedAt });
+      keepMeta({ ws, version: out.version, uploaded: out.uploaded, tombstones: out.tombstones, sharedAt: out.sharedAt, syncedAt: out.syncedAt, clockOffset: out.clockOffset });
       // 자동 동기화는 조용히: 앞서 보인 오류만 지우고, 직접 누른 동기화의 안내는 그대로 둔다.
       if (out.failedUploads) { setSyncNote(`동기화했지만 사진 ${out.failedUploads}장을 올리지 못했습니다. 다른 기기와 후원자에게는 이 사진이 보이지 않습니다. 잠시 뒤 다시 동기화해 보고, 계속되면 그 지출의 사진을 다시 올려 주세요.`); }
+      else if (out.docUsage > 0.8) setSyncNote(`동기화했습니다. 단체 공간이 ${Math.round(out.docUsage * 100)}% 찼습니다. 가득 차면 더 올릴 수 없으니, 끝난 사업의 기록은 백업한 뒤 지워 주세요.`);
       else if (out.missingImages) setSyncNote(`동기화했습니다. 영수증 사진 ${out.missingImages}장은 아직 올라오지 않았습니다.`);
       else if (!quiet) setSyncNote("동기화했습니다.");
       else if (live.current.noteIsError) setSyncNote("");
@@ -447,20 +475,20 @@ export default function Home() {
     let alive = true;
     (async () => {
       const out: Record<string, Audit> = {};
-      for (const e of list) out[e.id] = await auditRecord(e, led.ledger);
+      for (const e of list) out[e.id] = await auditRecord(e, led.ledger, { submitterApproves: settings.submitterApproves });
       const sum = await summarize(led.ledger);
       const print = await recordsFingerprint(list.filter((e) => e.project === project));
       if (alive) { setAudits(out); setLedSum(sum); setReportPrint(print); }
     })();
     return () => { alive = false; };
-  }, [list, led.ledger, project]);
+  }, [list, led.ledger, project, settings.submitterApproves]);
   // 열 때, 다시 돌아왔을 때, 기록이나 단체 정보가 바뀐 뒤에 자동으로 맞춘다.
   useEffect(() => {
     if (!ready || !meta.ws) return;
     const t = setTimeout(() => doSync(undefined, true), 1200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, meta.ws?.id, list, myLines, settings.org, settings.funder, settings.approver, settings.projects.join("|"), settings.sponsorView, settings.sponsorNames]);
+  }, [ready, meta.ws?.id, list, myLines, settings.org, settings.funder, settings.approver, settings.projects.join("|"), settings.sponsorView, settings.sponsorNames, settings.submitterApproves, JSON.stringify(settings.budgets)]);
   // 후원자용 보기 링크: 구성원 열쇠에서 한 방향으로 만든 열쇠를 담는다.
   useEffect(() => {
     if (!meta.ws) return setViewerLink("");
@@ -476,18 +504,20 @@ export default function Home() {
   }, []);
 
   const SUBMITTER = settings.submitter || "담당자";
-  // 승인자 기기에서는 이 기기를 쓰는 사람이 승인자다.
-  const APPROVER = (settings.role === "approver" ? settings.submitter : settings.approver) || settings.submitter || "승인자";
+  // 승인한 사람으로 기록할 이름. 단체 공간에서는 역할과 관계없이 이 기기를 쓰는 사람 본인이다
+  // (등록자가 승인했는데 설정에 적힌 대표 이름으로 남으면 안 된다). 혼자 쓰는 기기에서는 설정에 적은 승인자 이름을 쓴다.
+  const APPROVER = (meta.ws || settings.role === "approver" ? settings.submitter : settings.approver) || settings.submitter || "승인자";
   const keep = (next: Settings) => {
     const prev = live.current.settings;
-    const sharedChanged = prev.org !== next.org || prev.funder !== next.funder || prev.approver !== next.approver || prev.projects.join("|") !== next.projects.join("|") || prev.sponsorView !== next.sponsorView || prev.sponsorNames !== next.sponsorNames;
+    const sharedChanged = prev.org !== next.org || prev.funder !== next.funder || prev.approver !== next.approver || prev.projects.join("|") !== next.projects.join("|") || prev.sponsorView !== next.sponsorView || prev.sponsorNames !== next.sponsorNames || prev.submitterApproves !== next.submitterApproves || JSON.stringify(prev.budgets) !== JSON.stringify(next.budgets);
     setSettings(next); live.current.settings = next; saveSettings(window.localStorage, next);
-    if (sharedChanged && live.current.meta.ws) keepMeta({ ...live.current.meta, sharedAt: new Date().toISOString() });
+    if (sharedChanged && live.current.meta.ws) keepMeta({ ...live.current.meta, sharedAt: stampNow() });
   };
   const persist = (raw: Expense[]) => {
     const prev = live.current.list;
     // 확정된 기록을 고쳤으면 무엇을 고쳤는지 이력에 남긴 뒤, 바뀐 기록에 시각을 찍는다.
-    const next = touchChanged(prev, logEdits(prev, raw, live.current.settings.submitter || "담당자"));
+    const at = stampNow();
+    const next = touchChanged(prev, logEdits(prev, raw, live.current.settings.submitter || "담당자", at), at);
     setList(next); live.current.list = next;
     void signChanges(prev, next);
     if (!saveExpenses(window.localStorage, next, deviceMasked)) setToast("저장 공간이 부족해 이 기기에 저장하지 못했습니다. 오래된 기록을 내보낸 뒤 정리해 주세요.");
@@ -495,15 +525,25 @@ export default function Home() {
   const projects = useMemo(() => [...new Set([...settings.projects, project, ...list.map((e) => e.project)].filter(Boolean))], [list, project, settings.projects]);
   const mine = useMemo(() => sortByDate(list.filter((e) => e.project === project)), [list, project]);
   const attention = useMemo(() => needsAttention(mine), [mine]);
+  const shown = useMemo(() => filterExpenses(mine, filter), [mine, filter]);
+  // 예산을 적을 항목: 이 사업의 기록에 쓰인 예산 항목, 이미 예산을 정한 항목, 방금 추가한 항목
+  const budgetCats = useMemo(() => [...new Set([...mine.map((e) => e.budgetCategory).filter(Boolean), ...Object.keys(settings.budgets[project] ?? {}), ...extraCats])], [mine, settings.budgets, project, extraCats]);
   // 같은 영수증은 다른 사업 이름으로 올라올 수도 있어 전체 기록에서 찾는다.
   const dupIds = useMemo(() => duplicateIds(list), [list]);
+  // 단체가 정한 승인 방식
+  const POLICY = { submitterApproves: settings.submitterApproves };
   const ME: Actor = { name: settings.submitter, role: settings.role === "approver" ? "approver" : "submitter", shared: !!meta.ws };
   const dupLine = (e: Expense) => findDuplicates(e, list).map((x) => `${md(x.date)} ${x.item || "항목 미입력"} ${won(x.amount ?? 0)}${x.submittedBy ? ` (${x.submittedBy})` : ""}`).join(", ");
   const dupBanner = (e: Expense) => (findDuplicates(e, list).length
     ? <Banner status="warning" title="같은 영수증일 수 있습니다" description={`날짜와 금액이 같은 기록이 이미 있습니다: ${dupLine(e)}. 같은 지출이면 한 건만 남겨 주세요.`} data-testid="dup-warning" />
     : null);
   const set = <K extends keyof Expense>(k: K, v: Expense[K]) => setCur((c) => editField(c, k, v));
-  const go = (v: View) => { setView(v); setErr(""); setToast(""); window.scrollTo(0, 0); };
+  const go = (v: View) => {
+    setView(v); setErr(""); setToast(""); window.scrollTo(0, 0);
+    // 검토 목록과 결산보고서는 여럿이 올린 것을 모아 보는 화면이다. 들어갈 때 한 번 맞춰 최신으로 본다.
+    // (가만히 있을 때는 서버를 부르지 않는다. 방금 맞췄으면 다시 부르지 않는다.)
+    if ((v === "review" || v === "report") && live.current.meta.ws && Date.now() - lastSyncAt.current > 15_000) void doSync(undefined, true);
+  };
   const resetClose = () => { setClosePhase("idle"); setCloseSteps([]); setCloseOut(null); setCloseErr(""); };
   const resetGroup = () => { setGroupPhase("idle"); setGroupSteps([]); setGroups([]); setGroupNote(""); };
 
@@ -511,7 +551,7 @@ export default function Home() {
     resetGroup();
     // 사업·행사는 비워 둔다. 에이전트가 지난 기록을 보고 채우거나 묻는다.
     setCur(newExpense({ project: "", submittedBy: SUBMITTER }));
-    setEditing(false); setMemo(""); setRaw(null); setBoxes([]); setErr(""); setMorePages([]); setPdfPage(null);
+    setEditing(false); setMemo(""); setRaw(null); setBoxes([]); setErr(""); setMorePages([]); setPdfPage(null); setRefundMode(false);
     agentRef.current = null; setPendingIds([]);
     setPhase("idle"); setSteps([]); setQuestions([]); setGuide({ checklist: [], sources: [] });
     setStep("upload"); go("add");
@@ -684,11 +724,20 @@ export default function Home() {
     go("review"); setToast(evidenceMissing(e) ? "저장했습니다. 증빙은 아직 보완이 필요합니다." : "증빙을 보완했습니다.");
   }
   function approve(e: Expense) {
-    const block = approvalBlock(e, ME);
+    const block = approvalBlock(e, ME, POLICY);
     if (block) return setToast(`${block}.`);
-    persist(list.map((x) => (x.id === e.id ? approveExpense(x, APPROVER) : x)));
+    persist(list.map((x) => (x.id === e.id ? approveExpense(x, APPROVER, stampNow()) : x)));
     resetClose();
     setToast(`${e.item} ${won(e.amount ?? 0)}을 승인했습니다.`);
+  }
+  /** 승인하는 사람이 사유를 적어 올린 사람에게 되돌린다. */
+  function sendBack(e: Expense) {
+    const block = approvalBlock(e, ME, POLICY);
+    if (block) return setToast(`${block}.`);
+    if (!returnReason.trim()) return setErr("되돌리는 사유를 적어 주세요. 올린 사람이 무엇을 고치면 되는지 알 수 있게요.");
+    persist(list.map((x) => (x.id === e.id ? returnExpense(x, APPROVER, returnReason, stampNow()) : x)));
+    resetClose(); setReturnReason(""); setErr("");
+    setToast(`${e.item} ${won(e.amount ?? 0)}을 되돌렸습니다. ${e.submittedBy || "올린 사람"} 님에게 사유가 전해집니다.`);
   }
   async function runClose() {
     setClosePhase("running"); setCloseSteps([]); setCloseOut(null); setCloseErr("");
@@ -756,22 +805,38 @@ export default function Home() {
   }
   function removeExpense(e: Expense) {
     // 다른 기기에서 되살아나지 않도록 삭제 기록을 남긴다.
-    if (live.current.meta.ws) keepMeta({ ...live.current.meta, tombstones: { ...live.current.meta.tombstones, [e.id]: new Date().toISOString() } });
+    if (live.current.meta.ws) keepMeta({ ...live.current.meta, tombstones: { ...live.current.meta.tombstones, [e.id]: stampNow() } });
     persist(list.filter((x) => x.id !== e.id));
     for (const s of slotsOf(e)) deviceOriginals.del(s.key);
     deviceOriginals.del(e.id);
     resetClose(); go("list"); setToast(`${e.item || "기록"} 건을 삭제했습니다.`);
   }
+  /** 기록, 설정, 가린 사진, 원본 사진을 한 파일로 내려받는다. 언제 백업했는지도 적어 둔다. */
+  async function exportBackup() {
+    const originals: Record<string, string> = {};
+    for (const s of list.flatMap(slotsOf)) {
+      if (!s.original) continue;
+      const img = await deviceOriginals.get(s.key);
+      if (img) originals[s.key] = img;
+    }
+    const at = new Date().toISOString();
+    download(`열린영수증_백업_${at.slice(0, 10)}.json`, makeBackup(settings, list, at, originals), "application/json");
+    try { window.localStorage.setItem(BACKUP_KEY, at); } catch { /* 적어 두지 못해도 백업은 내려받았다 */ }
+    setLastBackupAt(at);
+    setToast(`백업 파일을 내려받았습니다. 기록 ${list.length}건, 원본 사진 ${Object.keys(originals).length}장이 들어 있습니다.`);
+  }
   async function importBackup(file: File | undefined) {
     if (!file) return;
     const back = parseBackup(await file.text());
     if (!back) return setErr("열린영수증 백업 파일이 아닙니다. 설정 화면에서 내보낸 .json 파일을 선택해 주세요.");
+    // 원본 사진을 이 기기의 보관함에 되돌려 놓는다 (예전 백업에는 원본이 없다).
+    for (const [key, img] of Object.entries(back.originals)) await deviceOriginals.put(key, img);
     keep(back.settings); persist(back.expenses.map(withStatus));
     if (back.settings.projects[0]) setProject(back.settings.projects[0]);
-    resetClose(); go("list"); setToast(`백업에서 기록 ${back.expenses.length}건을 가져왔습니다.`);
+    resetClose(); go("list"); setToast(`백업에서 기록 ${back.expenses.length}건${Object.keys(back.originals).length ? `과 원본 사진 ${Object.keys(back.originals).length}장` : ""}을 가져왔습니다.`);
   }
   async function makeShareLink() {
-    const r = buildReport(list, project);
+    const r = buildReport(list, project, undefined, settings.budgets[project]);
     const proof = { fingerprint: await recordsFingerprint(mine), ledger: await summarize(live.current.led.ledger) };
     const code = await encodeShare({ ...buildShare(r, settings.org, { includeRows: share.rows === "rows", showNames: share.names === "show" }), proof });
     const link = `${window.location.origin}/r#${code}`;
@@ -883,7 +948,7 @@ export default function Home() {
     const gone = new Set(removed);
     // 다른 기기에서 되살아나지 않도록 삭제 기록을 남긴다.
     if (live.current.meta.ws) {
-      const at = new Date().toISOString();
+      const at = stampNow();
       keepMeta({ ...live.current.meta, tombstones: { ...live.current.meta.tombstones, ...Object.fromEntries(removed.map((id) => [id, at])) } });
     }
     const cur2 = live.current.list;
@@ -1110,6 +1175,20 @@ export default function Home() {
             <Sub label="사업 추가" isDisabled={!newProject.trim()} onClick={() => { const n = newProject.trim(); keep(addProject(settings, n)); setProject(n); setNewProject(""); resetClose(); }} />
           </VStack>
         </Card>
+        <Card data-testid="budget-card">
+          <VStack gap={2}>
+            <Heading level={3}>예산 · {project}</Heading>
+            <Note>예산 항목마다 배정한 금액을 적어 두면, 결산보고서에서 쓴 돈과 견줘 집행률과 남은 금액을 보여 줍니다. 비워 두면 예산 없이 쓴 금액만 보입니다.</Note>
+            {budgetCats.map((cat) => (
+              <TextInput key={cat} id={`budget-${cat}`} label={`${cat} 예산 (원)`} inputMode="numeric" value={settings.budgets[project]?.[cat] ? String(settings.budgets[project][cat]) : ""} placeholder="예: 200000"
+                onChange={(v) => { const d = v.replace(/[^\d]/g, ""); keep(setBudget(settings, project, cat, d === "" ? null : Number(d))); }} />
+            ))}
+            <HStack gap={2} align="end">
+              <VStack width="100%"><TextInput id="budget-new" label="예산 항목 추가" value={newBudgetCat} placeholder="예: 회의·행사비" onChange={setNewBudgetCat} /></VStack>
+              <Button label="추가" isDisabled={!newBudgetCat.trim() || budgetCats.includes(newBudgetCat.trim())} onClick={() => { setExtraCats((c) => [...c, newBudgetCat.trim()]); setNewBudgetCat(""); }} />
+            </HStack>
+          </VStack>
+        </Card>
         <SegmentedControl label="내 역할" layout="fill" value={settings.role} onChange={(v) => keep({ ...settings, role: v === "approver" ? "approver" : "submitter" })}>
           <SegmentedControlItem value="submitter" label="기록을 올리는 사람" />
           <SegmentedControlItem value="approver" label="승인하는 사람" />
@@ -1125,6 +1204,12 @@ export default function Home() {
                 <Sub label={syncing ? "동기화하는 중…" : "지금 동기화"} isDisabled={syncing} onClick={() => doSync()} />
               </HStack>
               <Note>{syncNote || (meta.syncedAt ? `마지막 동기화 ${new Date(meta.syncedAt).toLocaleString("ko-KR")}` : "아직 동기화하지 않았습니다.")}</Note>
+              <Heading level={3}>승인하는 사람</Heading>
+              <Note>기본은 "승인하는 사람"으로 참여한 기기만 승인하고, 자기가 올린 지출은 승인하지 못합니다. 총무가 올리고 승인까지 하는 단체라면 "등록자도 승인"으로 바꾸세요. 누가 승인했는지와 직접 올린 지출이었는지는 기록의 이력과 서명에 남습니다.</Note>
+              <SegmentedControl label="승인하는 사람" layout="fill" value={settings.submitterApproves ? "anyone" : "approver"} onChange={(v) => keep({ ...settings, submitterApproves: v === "anyone" })}>
+                <SegmentedControlItem value="approver" label="승인자만" />
+                <SegmentedControlItem value="anyone" label="등록자도 승인" />
+              </SegmentedControl>
               <Heading level={3}>후원자용 보기</Heading>
               <Note>후원자는 결산보고서와 가린 영수증만 볼 수 있습니다. 원본 사진은 볼 수 없고, 기록을 고칠 수도 없습니다. 기록이 바뀌면 보고서도 따라 바뀝니다.</Note>
               <SegmentedControl label="후원자용 보기" layout="fill" value={settings.sponsorView ? "on" : "off"} onChange={(v) => keep({ ...settings, sponsorView: v === "on" })}>
@@ -1153,10 +1238,12 @@ export default function Home() {
         <Card>
           <VStack gap={2}>
             <Heading level={3}>백업</Heading>
-            <Note>기록은 이 브라우저에만 저장됩니다. 백업 파일에는 가린 영수증 이미지도 들어갑니다.</Note>
+            <Note>기록은 이 브라우저에만 저장됩니다. 백업 파일에는 기록, 가린 사진, 원본 사진이 모두 들어갑니다. 원본에는 가리지 않은 개인정보가 있으니 파일을 안전한 곳에 두세요.</Note>
+            {toast ? <Banner status="success" title={toast} /> : null}
+            {lastBackupAt ? <Note>마지막 백업: {lastBackupAt.slice(0, 10)}</Note> : null}
             <input ref={importRef} id="import" type="file" accept="application/json,.json" hidden onChange={(e) => importBackup(e.target.files?.[0])} />
             <HStack gap={2}>
-              <Sub label="백업 내보내기" onClick={() => download(`열린영수증_백업_${new Date().toISOString().slice(0, 10)}.json`, makeBackup(settings, list), "application/json")} />
+              <Sub label="백업 내보내기" onClick={exportBackup} />
               <Sub label="백업 가져오기" onClick={() => importRef.current?.click()} />
             </HStack>
           </VStack>
@@ -1214,7 +1301,11 @@ export default function Home() {
     const au = audits[e.id];
     const dev = (x?: { key: string; name: string }) => (x ? `${x.name || "이름 없음"} 기기 · 열쇠 ${x.key.slice(0, 8)}` : "");
     // 혼자 쓰는 기기는 한 기기에서 등록과 승인을 함께 하므로 승인 서명을 따지지 않는다.
-    if (meta.ws && au?.approval?.ok) rows.push(["올린 서명", dev(au.approval.submitter)], ["승인 서명", dev(au.approval.by)]);
+    if (meta.ws && au?.approval?.ok) {
+      rows.push(["올린 서명", dev(au.approval.submitter)], ["승인 서명", dev(au.approval.by)]);
+      // 승인자 기기가 아닌 곳에서 승인했거나 올린 기기가 직접 승인했으면 그렇다고 적는다.
+      if (au.approval.text !== "승인 서명을 확인했습니다") rows.push(["승인 방식", au.approval.text]);
+    }
     else rows.push(["서명", !au ? "확인하는 중" : au.signed ? dev(au.signer) : "지금 내용에 서명한 기기가 없습니다"]);
     return (
       <Frame title="지출 상세" side={STATUS_LABEL[e.status]}>
@@ -1264,6 +1355,20 @@ export default function Home() {
           </Card>
         ) : null}
         <VStack className="grow" />
+        {e.status === "pending_approval" && !approvalBlock(e, ME, POLICY) ? (
+          <Card data-testid="decide">
+            <VStack gap={2}>
+              <Heading level={3}>승인하거나 되돌리기</Heading>
+              <Note>고칠 곳이 있으면 사유를 적어 되돌리세요. 기록은 지워지지 않고 초안으로 돌아가며, 올린 사람에게 사유가 보입니다.</Note>
+              {err ? <Banner status="error" title={err} /> : null}
+              <TextInput id="return-reason" label="되돌리는 사유" value={returnReason} placeholder="예: 참석자 명단을 함께 붙여 주세요" onChange={setReturnReason} />
+              <HStack gap={2}>
+                <Main label="승인" onClick={() => approve(e)} />
+                <Sub label="되돌리기" onClick={() => sendBack(e)} />
+              </HStack>
+            </VStack>
+          </Card>
+        ) : null}
         <Main label="수정" onClick={() => editExisting(e)} />
         {evidenceMissing(e) ? <Sub label="증빙 보완" onClick={() => startFix(e)} /> : null}
         {confirmDelete
@@ -1298,8 +1403,26 @@ export default function Home() {
               <Stat label="합계" value={won(totalAmount(mine))} />
               <Stat label="보완" value={`${attention.length}건`} />
             </HStack>
-            {mine.length === 0 ? <Note>이 사업에는 아직 기록이 없습니다.</Note> : <Rows items={mine} onOpen={openDetail} dup={dupIds} />}
+            {mine.length > 0 ? (
+              <HStack gap={2} align="end">
+                <VStack width="100%"><TextInput id="search" label="찾기" value={filter.q} placeholder="항목, 가게, 금액, 사람" onChange={(v) => setFilter((f) => ({ ...f, q: v }))} /></VStack>
+                <Selector id="filter-status" label="상태" options={STATUS_FILTERS} value={filter.status} onChange={(v) => setFilter((f) => ({ ...f, status: (v || "all") as ListFilter["status"] }))} />
+              </HStack>
+            ) : null}
+            {isFiltering(filter) ? (
+              <HStack gap={2} align="center" justify="between" data-testid="filter-result">
+                <Text type="supporting" color="secondary" hasTabularNumbers>{`찾은 ${shown.length}건 · ${won(totalAmount(shown))} (전체 ${mine.length}건)`}</Text>
+                <Button label="모두 보기" size="sm" variant="ghost" onClick={() => setFilter(NO_FILTER)} />
+              </HStack>
+            ) : null}
+            {mine.length === 0 ? <Note>이 사업에는 아직 기록이 없습니다.</Note> : shown.length === 0 ? <Note>찾는 기록이 없습니다.</Note> : <Rows items={shown} onOpen={openDetail} dup={dupIds} who={!!meta.ws} />}
             {toast ? <Banner status="info" title={toast} /> : null}
+            {!meta.ws && backupAdvice(list, lastBackupAt) ? (
+              <VStack gap={2} data-testid="backup-advice">
+                <Banner status="warning" title="백업해 두세요" description={backupAdvice(list, lastBackupAt)} />
+                <Sub label="지금 백업 파일 내려받기" onClick={exportBackup} />
+              </VStack>
+            ) : null}
             {meta.ws ? (
               <HStack gap={2} align="center" justify="between" data-testid="sync-status" data-sync-count={syncCount}>
                 <Text type="supporting" color="secondary">{syncing ? "단체 공간과 맞추는 중…" : syncNote || (meta.syncedAt ? `단체 공간 · ${new Date(meta.syncedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 동기화` : "단체 공간 연결됨")}</Text>
@@ -1324,9 +1447,9 @@ export default function Home() {
   /* ---------- 검토 ---------- */
   if (view === "review") {
     return (
-      <Frame title="검토" side={`${settings.role === "approver" ? "승인자" : "대표"} ${APPROVER}`}>
+      <Frame title="검토" side={meta.ws ? `${settings.role === "approver" ? "승인자" : "등록자"} ${SUBMITTER}` : `대표 ${APPROVER}`}>
         <Text type="supporting" color="secondary">{project}</Text>
-        <Rows items={mine} onOpen={openDetail} dup={dupIds} />
+        <Rows items={mine} onOpen={openDetail} dup={dupIds} who={!!meta.ws} />
         {toast ? <Banner status="success" title={toast} /> : null}
         {mine.some((e) => dupIds.has(e.id)) ? <Banner status="warning" title={`같은 영수증일 수 있는 기록 ${mine.filter((e) => dupIds.has(e.id)).length}건`} description="날짜와 금액이 같은 기록입니다. 목록에서 '중복 확인' 표시가 있는 건을 열어 확인해 주세요." data-testid="dup-review" /> : null}
         {groupCard}
@@ -1339,9 +1462,9 @@ export default function Home() {
                   <ListItem
                     key={e.id}
                     label={`${e.item} ${won(e.amount ?? 0)}`}
-                    description={openItems(e).map((o) => o.text).join(" · ")}
+                    description={openItems(e).map((o) => o.text).join(" · ") + (meta.ws && e.submittedBy ? ` · 올린 사람 ${e.submittedBy}` : "")}
                     endContent={e.status === "pending_approval"
-                      ? (approvalBlock(e, ME) ? <Text type="supporting" color="secondary" data-testid="no-approve">{approvalBlock(e, ME)}</Text> : <Button label="승인" size="sm" onClick={() => approve(e)} />)
+                      ? (approvalBlock(e, ME, POLICY) ? <Text type="supporting" color="secondary" data-testid="no-approve">{approvalBlock(e, ME, POLICY)}</Text> : <Button label="승인" size="sm" onClick={() => approve(e)} />)
                       : e.status === "draft"
                         ? <Button label="수정" size="sm" onClick={() => editExisting(e)} />
                         : <Button label="보완" size="sm" onClick={() => startFix(e)} />}
@@ -1380,7 +1503,7 @@ export default function Home() {
 
   /* ---------- 결산보고서 ---------- */
   if (view === "report") {
-    const r = buildReport(list, project);
+    const r = buildReport(list, project, undefined, settings.budgets[project]);
     return (
       <Frame title={`${project} 결산보고서 초안`} side={`지출 기간 ${r.period}`} wide>
         {r.openItems.length > 0 ? <VStack className="noprint"><Banner status="warning" title={`확인할 항목이 ${r.openItems.length}건 남아 있습니다.`} description="그대로 내보낼 수 있지만 보고서에 표시됩니다." /></VStack> : null}
@@ -1451,9 +1574,18 @@ export default function Home() {
     <DateInput id="f-date" label="일자" placeholder="날짜 선택" value={/^\d{4}-\d{2}-\d{2}$/.test(cur.date) ? (cur.date as any) : undefined} description={ai("date")}
       onChange={(v) => set("date", v ?? "")} />
   );
+  // 환불(되돌려 받은 돈)은 금액을 음수로 저장한다. 입력 칸에는 숫자만 넣고, 지출인지 환불인지는 따로 고른다.
+  const isRefund = cur.amount != null ? cur.amount < 0 : refundMode;
   const amountField = (
-    <TextInput id="f-amount" label="금액 (원)" inputMode="numeric" value={cur.amount == null ? "" : String(cur.amount)} description={ai("amount")}
-      onChange={(v) => { const d = v.replace(/[^\d]/g, ""); set("amount", d === "" ? null : Number(d)); }} />
+    <VStack gap={2}>
+      <TextInput id="f-amount" label="금액 (원)" inputMode="numeric" value={cur.amount == null ? "" : String(Math.abs(cur.amount))} description={isRefund ? "환불로 기록합니다. 합계에서 이 금액만큼 빠집니다." : ai("amount")}
+        onChange={(v) => { const d = v.replace(/[^\d]/g, ""); set("amount", d === "" ? null : Number(d) * (isRefund ? -1 : 1)); }} />
+      <SegmentedControl label="지출인지 환불인지" layout="fill" size="sm" value={isRefund ? "refund" : "spend"}
+        onChange={(v) => { const refund = v === "refund"; setRefundMode(refund); if (cur.amount != null && cur.amount < 0 !== refund) set("amount", -cur.amount); }}>
+        <SegmentedControlItem value="spend" label="지출" />
+        <SegmentedControlItem value="refund" label="환불 (되돌려 받음)" />
+      </SegmentedControl>
+    </VStack>
   );
   const payField = (
     <Selector id="f-pay" label="결제 방식" placeholder="선택" options={PAY_OPTIONS} value={cur.paymentMethod ?? undefined} description={ai("paymentMethod")}

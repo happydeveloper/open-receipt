@@ -24,6 +24,10 @@ export interface SharedSettings {
   sponsorView?: boolean;
   /** 후원자용 보기에서 사람 이름을 보여 줄지 */
   sponsorNames?: boolean;
+  /** 등록자도 승인할 수 있게 할지 */
+  submitterApproves?: boolean;
+  /** 예산: 사업 이름 → 예산 항목 → 금액 */
+  budgets?: Record<string, Record<string, number>>;
 }
 export interface SyncDoc {
   v: 1;
@@ -34,6 +38,40 @@ export interface SyncDoc {
   /** 기기별 서명 원장. 모든 구성원 기기가 사본을 가진다. */
   ledger?: Ledger;
 }
+/** 기기 시계가 서버보다 이만큼 넘게 앞서 찍은 시각은 믿지 않는다. */
+export const FUTURE_SLACK_MS = 5 * 60_000;
+/**
+ * 서버 시각보다 한참 뒤로 찍힌 시각을 서버 시각으로 되돌린다.
+ * 시계가 빠른 기기가 고친 값에는 "미래"의 시각이 찍혀, 다른 기기가 나중에 아무리 고쳐도 계속 이겼다.
+ * 서버와 맞출 때마다 이런 시각을 서버의 지금으로 끌어내리면, 그 뒤에 고친 값이 정상적으로 이긴다.
+ */
+export function clampFuture(list: Expense[], serverNow: string): Expense[] {
+  const limit = time(serverNow) + FUTURE_SLACK_MS;
+  if (!time(serverNow)) return list;
+  const late = (s?: string) => time(s) > limit;
+  return list.map((e) => {
+    const stamps = Object.entries(e.fieldAt ?? {});
+    if (!late(e.updatedAt) && !stamps.some(([, at]) => late(at))) return e;
+    return { ...e, updatedAt: late(e.updatedAt) ? serverNow : e.updatedAt, ...(stamps.length ? { fieldAt: Object.fromEntries(stamps.map(([f, at]) => [f, late(at) ? serverNow : at])) } : {}) };
+  });
+}
+
+/** 서버가 한 번에 받는 문서(암호문)의 길이. 서버(lib/sync-store.ts)와 기기가 같은 값을 쓴다. */
+export const DOC_LIMIT = 3_000_000;
+
+/**
+ * 문서에 싣기 전에 기록을 가볍게 한다: 검색 결과 가운데 "확인할 자료"에 실제로 연결된 것만 남기고,
+ * 화면에 쓰지 않는 긴 설명은 뺀다. 지출 한 건에 검색 결과 여덟 건의 설명이 붙어 있어 기록의 절반을 차지했다.
+ */
+export function slimGuidance(list: Expense[]): Expense[] {
+  return list.map((e) => {
+    if (!e.guidance?.sources.length) return e;
+    const used = new Set(e.guidance.checklist.map((c) => c.sourceUrl));
+    const sources = e.guidance.sources.filter((s) => used.has(s.url)).map((s) => (s.description ? { ...s, description: "" } : s));
+    return sources.length === e.guidance.sources.length && sources.every((s, i) => s === e.guidance!.sources[i]) ? e : { ...e, guidance: { ...e.guidance, sources } };
+  });
+}
+
 /** 영수증 이미지는 따로 올리므로 문서에는 자리표시만 둔다. */
 export const IMAGE_REF = "sync:image";
 
@@ -42,7 +80,7 @@ const time = (s?: string) => (s ? Date.parse(s) || 0 : 0);
 /** 내용에 해당하는 칸. 승인자가 본 내용이 바뀌었는지 따질 때도 이 목록을 쓴다. */
 const CONTENT = ["date", "item", "amount", "merchant", "purpose", "project", "budgetCategory", "paymentMethod", "payer", "reimbursement", "evidence", "summary"] as const;
 /** 칸 단위로 합치는 칸. 승인(approvedBy, approvedAt)은 한 덩어리로 따로 다룬다. */
-const FIELDS = [...CONTENT, "confirmed", "submittedBy", "guidance"] as const;
+const FIELDS = [...CONTENT, "confirmed", "submittedBy", "guidance", "returned"] as const;
 const APPROVAL = "approvedBy";
 const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const bare = (e: Expense) => JSON.stringify({ ...e, updatedAt: undefined, fieldAt: undefined });
@@ -82,7 +120,7 @@ export function mergeRecord(win: Expense, lose: Expense): { expense: Expense; mi
   // 두 기기가 같은 칸을 서로 다르게 고쳤으면 한쪽 값은 덮인다. 무엇이 남고 무엇이 덮였는지 이력에 적어 둔다.
   const clashes: { at: string; by: string; text: string }[] = [];
   for (const f of FIELDS) {
-    if (stamp(win, f) > 0 && stamp(lose, f) > 0 && !same(win[f], lose[f]) && f !== "confirmed" && f !== "submittedBy" && f !== "guidance") {
+    if (stamp(win, f) > 0 && stamp(lose, f) > 0 && !same(win[f], lose[f]) && f !== "confirmed" && f !== "submittedBy" && f !== "guidance" && f !== "returned") {
       const [kept, dropped] = takes(f) ? [lose, win] : [win, lose];
       const a = showValue(kept, f), b = showValue(dropped, f);
       if (a !== b) clashes.push({ at: kept.fieldAt![f], by: "동기화", text: `${fieldLabel(f)}: 두 기기에서 함께 고쳐 나중에 고친 값(${a})을 남겼습니다. 덮인 값: ${b}` });

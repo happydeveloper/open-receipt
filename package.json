@@ -13,7 +13,7 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test e2e/demo.spec.ts e2e/bundle.spec.ts e2e/guide.spec.ts e2e/group.spec.ts e2e/bigphoto.spec.ts e2e/merge.spec.ts e2e/pdf.spec.ts",
+    "test:e2e": "playwright test e2e/demo.spec.ts e2e/bundle.spec.ts e2e/guide.spec.ts e2e/group.spec.ts e2e/bigphoto.spec.ts e2e/merge.spec.ts e2e/pdf.spec.ts e2e/backup.spec.ts e2e/bookkeeping.spec.ts e2e/team.spec.ts",
     "test:live": "LIVE=1 playwright test e2e/live.spec.ts"
   },
   "dependencies": {

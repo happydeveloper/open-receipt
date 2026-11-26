@@ -248,14 +248,15 @@ function toExpense(r: RecordValues, ev: ExpenseRunInput["evidence"]): Expense {
 function isFilled(r: RecordValues, f: RecordField): boolean {
   const v = r[f];
   if (f === "reimbursement") return v === "needed" || v === "not_needed";
-  if (f === "amount") return typeof v === "number" && v > 0;
+  if (f === "amount") return typeof v === "number" && v !== 0; // 음수는 사람이 넣은 환불이다
   return v !== null && v !== undefined && String(v).trim() !== "";
 }
 
 /** 값 하나를 검증·정규화한다. 쓸 수 없는 값이면 undefined. */
-export function normalizeField(f: RecordField, v: unknown): string | number | undefined {
+export function normalizeField(f: RecordField, v: unknown, fromPerson = false): string | number | undefined {
   if (v === null || v === undefined) return undefined;
-  if (f === "amount") return normalizeAmount(v) ?? undefined;
+  // 음수(환불)는 사람이 넣은 기록에서만 받는다. 모델이 준 음수는 버린다.
+  if (f === "amount") return normalizeAmount(v, fromPerson) ?? undefined;
   const s = String(v).trim().slice(0, 100);
   if (!s) return undefined;
   if (f === "date") return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : undefined;
@@ -281,7 +282,7 @@ export function expenseKickoffText(memo: string, record: RecordValues, locked: s
 export function normalizeRecord(raw: unknown): RecordValues {
   const record: RecordValues = {};
   for (const f of RECORD_FIELDS) {
-    const v = normalizeField(f, (raw as any)?.[f]);
+    const v = normalizeField(f, (raw as any)?.[f], true); // 화면이 보낸 지금 기록이다
     if (v !== undefined) record[f] = v;
   }
   return record;

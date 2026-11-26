@@ -117,6 +117,28 @@ describe("서명 원장", () => {
     expect(await auditRecord({ ...approved, amount: 90000 }, good)).toMatchObject({ signed: false, approval: { ok: false } });
   });
 
+  it("단체가 '등록자도 승인'으로 정했으면 등록자 기기의 승인과 직접 올린 지출의 승인을 받아들이고, 그렇다고 적는다", async () => {
+    const sub = await createIdentity();
+    const other = await createIdentity();
+    const e = draft();
+    const base = await sign({}, sub, SUB, [], [e], "2026-11-20T01:00:00.000Z");
+    const approved = approveExpense(e, "이등록", "2026-11-21T00:00:00.000Z");
+    const open = { submitterApproves: true };
+    // 다른 등록자 기기가 승인
+    const byMember = await sign(base, other, { name: "이등록", role: "submitter" }, [e], [approved], "2026-11-21T00:00:00.000Z");
+    expect((await auditRecord(approved, byMember, open)).approval).toMatchObject({ ok: true, text: "등록자 기기가 승인했습니다", by: { key: other.key }, submitter: { key: sub.key } });
+    expect((await auditRecord(approved, byMember)).approval).toMatchObject({ ok: false }); // 정하지 않은 단체에서는 여전히 인정하지 않는다
+    // 올린 기기가 직접 승인
+    const self = await sign(base, sub, SUB, [e], [approved], "2026-11-21T00:00:00.000Z");
+    expect((await auditRecord(approved, self, open)).approval).toMatchObject({ ok: true, text: "올린 기기가 직접 승인했습니다" });
+    // 승인자 기기의 승인은 예전과 같은 문구다
+    const byApprover = await sign(base, other, APP, [e], [approved], "2026-11-21T00:00:00.000Z");
+    expect((await auditRecord(approved, byApprover, open)).approval).toMatchObject({ ok: true, text: "승인 서명을 확인했습니다" });
+    // 승인 뒤에 금액을 바꾼 기록과 서명 없는 승인은 이 방식에서도 걸린다
+    expect((await auditRecord({ ...approved, amount: 90000 }, self, open)).approval).toMatchObject({ ok: false });
+    expect((await auditRecord(approved, base, open)).approval).toMatchObject({ ok: false, text: "승인 서명이 없습니다" });
+  });
+
   it("지문: 원장에 줄이 늘면 원장 지문이 바뀌고, 보고서 지문은 기록 내용이 바뀔 때만 바뀐다", async () => {
     const me = await createIdentity();
     const e1 = draft();

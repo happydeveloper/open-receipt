@@ -54,7 +54,8 @@ export function evidenceMissing(e: Expense): boolean {
 export function missingFields(e: Expense): string[] {
   const out: string[] = [];
   if (!e.date) out.push("일자");
-  if (e.amount == null || !(e.amount > 0)) out.push("금액");
+  // 음수는 환불이다. 0과 빈 값만 빠진 것으로 본다.
+  if (e.amount == null || !Number.isFinite(e.amount) || e.amount === 0) out.push("금액");
   if (!e.item.trim()) out.push("항목");
   if (!e.project.trim()) out.push("사업·행사");
   if (!e.paymentMethod) out.push("결제 방식");
@@ -78,6 +79,7 @@ export function openItems(e: Expense): OpenItem[] {
       text: e.paymentMethod === "transfer" ? "이체확인증 또는 대체 증빙 첨부" : "영수증 또는 대체 증빙 첨부",
     });
   }
+  if (e.returned && !e.confirmed) items.push({ code: "returned", text: `${e.returned.by || "승인하는 사람"} 님이 되돌렸습니다. 사유: ${e.returned.reason}` });
   const miss = missingFields(e);
   if (miss.length) items.push({ code: "fields", text: `필수 정보 입력: ${miss.join(", ")}` });
   const status = deriveStatus(e);
@@ -99,7 +101,18 @@ export function withStatus(e: Expense): Expense {
 
 /** 입력자의 확정. 사람이 누를 때만 호출한다. */
 export function confirmExpense(e: Expense, by: string): Expense {
-  return withStatus({ ...e, confirmed: true, submittedBy: by });
+  // 되돌려 받은 기록을 다시 확정하면 되돌림 표시는 지운다 (이력에는 남아 있다).
+  return withStatus({ ...e, confirmed: true, submittedBy: by, returned: undefined });
+}
+
+/**
+ * 승인하는 사람이 고쳐 달라고 되돌린다. 승인 대기인 기록만 되돌릴 수 있고, 사유를 적어야 한다.
+ * 기록은 초안으로 돌아가고, 올린 사람에게 사유가 "확인할 항목"으로 보인다. 지우거나 판정하는 것이 아니라 다시 확인을 부탁하는 것이다.
+ */
+export function returnExpense(e: Expense, by: string, reason: string, at: string = new Date().toISOString()): Expense {
+  const why = reason.trim().slice(0, 200);
+  if (deriveStatus(e) !== "pending_approval" || !why) return e;
+  return addLog(withStatus({ ...e, confirmed: false, returned: { by, reason: why, at } }), by, `되돌렸습니다. 사유: ${why}`, at);
 }
 
 /** 이력은 최근 20줄만 남긴다. */
@@ -117,7 +130,9 @@ export function reconfirmExpense(e: Expense, by: string, before: Expense | undef
 /** 승인자의 승인. 승인 대기 상태에서만 동작한다. */
 export function approveExpense(e: Expense, by: string, at: string = new Date().toISOString()): Expense {
   if (deriveStatus(e) !== "pending_approval") return e;
-  return addLog(withStatus({ ...e, approvedBy: by, approvedAt: at }), by, "승인했습니다", at);
+  // 자기가 올린 지출을 승인했으면 그 사실을 이력에 적는다 (막지는 않되 숨기지 않는다).
+  const own = e.submittedBy.trim() !== "" && e.submittedBy.trim() === by.trim();
+  return addLog(withStatus({ ...e, approvedBy: by, approvedAt: at }), by, own ? "승인했습니다 (직접 올린 지출)" : "승인했습니다", at);
 }
 
 /**
@@ -146,13 +161,21 @@ export interface Actor {
 }
 const sameName = (a: string, b: string) => a.trim() !== "" && a.trim() === b.trim();
 
+/** 단체가 정한 승인 방식. */
+export interface ApprovalPolicy {
+  /** 등록자(기록을 올리는 사람)도 승인할 수 있게 할지. 켜면 자기가 올린 지출도 승인할 수 있다 */
+  submitterApproves?: boolean;
+}
 /**
  * 이 사람이 이 기록을 승인할 수 없는 이유. 승인할 수 있으면 null.
  * 단체 공간에서는 승인자 역할만 승인하고, 자기가 올린 지출은 승인하지 못한다.
+ * 단체가 "등록자도 승인"으로 정했으면 누구나 승인할 수 있다. 총무 한 사람이 올리고 승인까지 하는 작은 단체를 위한 것이다.
+ * 누가 승인했는지와 직접 올린 지출이었는지는 이력과 서명에 그대로 남는다.
  */
-export function approvalBlock(e: Expense, who: Actor): string | null {
+export function approvalBlock(e: Expense, who: Actor, policy: ApprovalPolicy = {}): string | null {
   if (deriveStatus(e) !== "pending_approval") return "승인 대기 상태가 아닙니다";
   if (!who.shared) return null;
+  if (policy.submitterApproves) return null;
   if (who.role !== "approver") return "승인자가 승인합니다";
   if (sameName(e.submittedBy, who.name)) return "내가 올린 지출은 다른 승인자가 승인합니다";
   return null;
@@ -163,7 +186,7 @@ const norm = (s: string) => s.replace(/\(주\)|주식회사|㈜|[\s()\-·.,_/]/g
 
 /** 같은 영수증일 수 있는 다른 기록: 날짜와 금액이 같고, 가맹점이 같거나 한쪽이 비어 있다. */
 export function findDuplicates(e: Expense, list: Expense[]): Expense[] {
-  if (!e.date || e.amount == null || !(e.amount > 0)) return [];
+  if (!e.date || e.amount == null || e.amount === 0) return [];
   const m = norm(e.merchant);
   return list.filter((x) => {
     if (x.id === e.id || x.date !== e.date || x.amount !== e.amount) return false;

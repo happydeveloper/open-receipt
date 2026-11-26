@@ -54,7 +54,7 @@ export interface Guidance {
   searchedAt: string;
 }
 export interface OpenItem {
-  code: "evidence" | "fields" | "reimbursement" | "approval";
+  code: "evidence" | "fields" | "reimbursement" | "approval" | "returned";
   text: string;
 }
 /** 승인과 관련된 변경 이력 한 줄. */
@@ -85,6 +85,8 @@ export interface Expense {
   submittedBy: string;
   approvedBy?: string;
   approvedAt?: string;
+  /** 승인하는 사람이 고쳐 달라고 되돌린 기록이면: 누가, 왜, 언제. 올린 사람이 다시 확정하면 지워진다 */
+  returned?: { by: string; reason: string; at: string };
   /** 마지막으로 바뀐 시각. 기기 간 동기화에서 더 새로운 쪽을 고르는 데 쓴다. */
   updatedAt?: string;
   /**

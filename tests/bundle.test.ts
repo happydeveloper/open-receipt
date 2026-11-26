@@ -34,7 +34,7 @@ function grouped(): Expense {
 function api(store: SyncStore): SyncApi {
   const out = async (r: Response) => ({ status: r.status, body: await r.json() });
   return {
-    getDoc: async (id) => out(await getDoc(store, id)),
+    getDoc: async (id, since) => out(await getDoc(store, id, since)),
     putDoc: async (id, token, body) => out(await putDoc(store, id, token, body)),
     getImage: async (id, eid, kind) => out(await getImage(store, id, eid, kind)),
     putImage: async (id, eid, token, body, kind) => out(await putImage(store, id, eid, token, body, kind)),

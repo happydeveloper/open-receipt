@@ -27,7 +27,10 @@ export interface Report {
   count: number;
   total: number;
   approvedTotal: number;
-  byCategory: { name: string; count: number; amount: number }[];
+  /** budget은 그 항목에 배정한 예산. 정하지 않았으면 없다 */
+  byCategory: { name: string; count: number; amount: number; budget?: number }[];
+  /** 배정한 예산의 합. 예산을 하나도 정하지 않았으면 0 */
+  budgetTotal: number;
   byPayment: { name: string; count: number; amount: number }[];
   byStatus: { name: string; count: number; amount: number }[];
   rows: ReportRow[];
@@ -50,6 +53,15 @@ function group(list: Expense[], key: (e: Expense) => string) {
   return [...m.values()].sort((a, b) => b.amount - a.amount || a.name.localeCompare(b.name));
 }
 
+/** 예산 항목별 집행에 배정한 예산을 붙인다. 예산만 있고 아직 쓴 돈이 없는 항목도 0원으로 보여 준다. */
+function withBudget(rows: { name: string; count: number; amount: number }[], budget: Record<string, number>) {
+  const out: Report["byCategory"] = rows.map((r) => (budget[r.name] ? { ...r, budget: budget[r.name] } : r));
+  for (const [name, amount] of Object.entries(budget)) if (!rows.some((r) => r.name === name)) out.push({ name, count: 0, amount: 0, budget: amount });
+  return out;
+}
+/** 집행률 문구. 예산이 없으면 빈 문자열. */
+export const spendRate = (amount: number, budget?: number) => (budget ? `${Math.round((amount / budget) * 100)}%` : "");
+
 /** 지출 기간 문구: 가장 이른 날짜 ~ 가장 늦은 날짜. */
 export function periodOf(list: Expense[]): string {
   const dates = list.map((e) => e.date).filter(Boolean).sort();
@@ -59,7 +71,7 @@ export function periodOf(list: Expense[]): string {
 }
 
 /** 사업별 결산보고서 초안 데이터. 판정 없이 합계와 "확인할 항목"만 담는다. */
-export function buildReport(all: Expense[], project: string, generatedAt = new Date().toISOString()): Report {
+export function buildReport(all: Expense[], project: string, generatedAt = new Date().toISOString(), budget: Record<string, number> = {}): Report {
   const list = sortByDate(all.filter((e) => e.project === project));
   const order: Status[] = ["done", "pending_approval", "needs_evidence", "draft"];
   const byStatus = group(list, (e) => STATUS_LABEL[e.status]).sort(
@@ -84,7 +96,8 @@ export function buildReport(all: Expense[], project: string, generatedAt = new D
     count: list.length,
     total: totalAmount(list),
     approvedTotal: totalAmount(list.filter((e) => e.status === "done")),
-    byCategory: group(list, (e) => e.budgetCategory),
+    byCategory: withBudget(group(list, (e) => e.budgetCategory), budget),
+    budgetTotal: Object.values(budget).reduce((s, n) => s + n, 0),
     byPayment: group(list, (e) => (e.paymentMethod ? PAYMENT_LABEL[e.paymentMethod] : "")),
     byStatus,
     rows: list.map((e) => ({
@@ -152,7 +165,9 @@ figure{margin:0;width:calc(50% - 6px);break-inside:avoid}figure img{width:100%;b
 <h2>1. 요약</h2>
 ${table(["지출 건수", "지출 합계", "승인 완료 금액", "확인할 항목", "환급 필요 금액"], [[`${r.count}건`, won(r.total), won(r.approvedTotal), `${r.openItems.length}건`, won(r.reimbursementTotal)]], [0, 1, 2, 3, 4])}
 <h2>2. 예산 항목별 집행</h2>
-${table(["예산 항목", "건수", "금액"], [...r.byCategory.map((g) => [g.name, `${g.count}건`, won(g.amount)]), ["합계", `${r.count}건`, won(r.total)]], [1, 2])}
+${r.budgetTotal
+    ? table(["예산 항목", "건수", "쓴 금액", "예산", "집행률", "남은 금액"], [...r.byCategory.map((g) => [g.name, `${g.count}건`, won(g.amount), g.budget ? won(g.budget) : "-", spendRate(g.amount, g.budget) || "-", g.budget ? won(g.budget - g.amount) : "-"]), ["합계", `${r.count}건`, won(r.total), won(r.budgetTotal), spendRate(r.total, r.budgetTotal), won(r.budgetTotal - r.total)]], [1, 2, 3, 4, 5])
+    : table(["예산 항목", "건수", "금액"], [...r.byCategory.map((g) => [g.name, `${g.count}건`, won(g.amount)]), ["합계", `${r.count}건`, won(r.total)]], [1, 2])}
 <h2>3. 결제 방식별 집행</h2>
 ${table(["결제 방식", "건수", "금액"], r.byPayment.map((g) => [g.name, `${g.count}건`, won(g.amount)]), [1, 2])}
 <h2>4. 지출 내역</h2>
