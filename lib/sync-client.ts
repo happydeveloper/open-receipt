@@ -216,7 +216,7 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
     const prints: Record<string, string> = {};
     if (viewOn) for (const p of new Set(expenses.map((e) => e.project).filter(Boolean))) prints[p] = await recordsFingerprint(expenses.filter((e) => e.project === p));
     const proof = viewOn ? { ledger: await summarize(led.ledger), prints } : undefined;
-    const bundle = buildViewBundle(expenses, shared.org, { enabled: viewOn, showNames: shared.sponsorNames === true, budgets: shared.budgets }, now, proof);
+    const bundle = buildViewBundle(expenses, shared.org, { enabled: viewOn, showNames: shared.sponsorNames === true, budgets: shared.budgets, closed: shared.closed }, now, proof);
     const bundleSig = `view:${JSON.stringify({ ...bundle, publishedAt: "" }).length}:${viewOn}:${JSON.stringify(bundle.projects.map((p) => [p.project, p.report.total, p.report.count, p.receipts.length, p.report.openItems.length, p.report.approvedTotal, p.report.budgetTotal, p.report.byCategory.map((c) => c.budget ?? 0).join(",")]))}`;
     const hadView = [...uploaded].some((u) => u.startsWith("view:"));
     if ((viewOn || hadView) && !uploaded.has(bundleSig)) {

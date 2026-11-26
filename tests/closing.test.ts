@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /** 사업 마감: 누가 마감할 수 있는지, 마감된 사업의 기록이 잠기는지, 두 기기의 마감이 어떻게 합쳐지는지. */
 import { describe, expect, it } from "vitest";
-import { changedAfterClose, closeBlock, closeProject, closingOf, guardClosed, isClosed, mergeClosings, normalizeClosings, reopenProject, unfinished } from "@/lib/closing";
+import { changedAfterClose, closedBy, closeBlock, closeProject, closingOf, guardClosed, isClosed, mergeClosings, normalizeClosings, reopenProject, unfinished } from "@/lib/closing";
 import { memoryBag } from "@/lib/originals";
+import { buildReport, closedLine, reportToHtml } from "@/lib/report";
+import { buildShare } from "@/lib/share";
+import { buildViewBundle } from "@/lib/sponsor-view";
 import { seedExpenses } from "@/lib/seed";
 import { normalizeSettings } from "@/lib/settings";
 import { syncNow, type SyncApi, type SyncLocal } from "@/lib/sync-client";
@@ -85,6 +88,35 @@ describe("사업 마감", () => {
     expect(normalizeClosings({ [P]: { at: "2026-11-25T09:00:00.000Z", by: "박대표" }, 나쁨: { at: "어제" }, "": { at: "2026-11-25T09:00:00.000Z" }, 풀림: { at: "2026-11-25T09:00:00.000Z", by: "", open: true } })).toEqual({ [P]: { at: "2026-11-25T09:00:00.000Z", by: "박대표" }, 풀림: { at: "2026-11-25T09:00:00.000Z", by: "", open: true } });
     expect(normalizeClosings(null)).toEqual({});
     expect(normalizeSettings({}).closed).toEqual({});
+  });
+});
+
+describe("보고서의 마감 표시", () => {
+  it("결산보고서, 내려받는 파일, 공유 링크, 후원자용 보기에 마감 표시가 들어간다. 마감한 사람이 아니라 단체 이름으로 적는다", () => {
+    const open = buildReport(list(), P, "2026-11-26T00:00:00.000Z");
+    expect(open.closed).toBeUndefined();
+    expect(reportToHtml(open)).toContain("결산보고서 초안");
+    expect(closedBy({}, P, "다온 나눔모임")).toBeNull();
+    const r = buildReport(list(), P, "2026-11-26T00:00:00.000Z", {}, closedBy(closed, P, "다온 나눔모임"));
+    expect(r.closed).toEqual({ at: "2026-11-25T09:00:00.000Z", by: "다온 나눔모임" });
+    const html = reportToHtml(r);
+    expect(html).toContain("마감 2026-11-25 (다온 나눔모임)");
+    expect(html).not.toContain("결산보고서 초안");
+    expect(html).not.toContain("박대표"); // 마감 처리한 사람의 이름은 보고서에 싣지 않는다
+    // 공유 링크: 이름을 가려도 단체 이름은 그대로 나간다 (사람 이름이 아니다)
+    const shared = buildShare(r, "다온 나눔모임", { includeRows: true, showNames: false });
+    expect(shared.report.closed).toEqual({ at: "2026-11-25T09:00:00.000Z", by: "다온 나눔모임" });
+    expect(JSON.stringify(shared.report.closed)).not.toContain("박대표");
+    // 단체 이름을 적지 않았으면 날짜만
+    expect(closedLine(closedBy(closed, P, "")!)).toBe("마감 2026-11-25");
+    // 후원자용 보기: 마감한 사업에만 표시가 붙는다
+    const other = { ...list()[0], id: "x", project: "봄 캠프" };
+    const bundle = buildViewBundle([...list(), other], "다온 나눔모임", { enabled: true, showNames: false, closed });
+    expect(bundle.projects.find((p) => p.project === P)!.report.closed).toEqual({ at: "2026-11-25T09:00:00.000Z", by: "다온 나눔모임" });
+    expect(bundle.projects.find((p) => p.project === "봄 캠프")!.report.closed).toBeUndefined();
+    expect(JSON.stringify(bundle)).not.toContain("박대표");
+    // 마감을 풀면 사라진다
+    expect(buildViewBundle(list(), "다온", { enabled: true, showNames: true, closed: reopenProject(closed, P, "박대표") }).projects[0].report.closed).toBeUndefined();
   });
 });
 

@@ -24,6 +24,8 @@ export interface Report {
   project: string;
   period: string;
   generatedAt: string;
+  /** 마감한 사업이면 언제 마감했는지와, 마감한 주체로 보여 줄 이름(단체 이름). 마감 처리한 사람의 이름은 싣지 않는다 */
+  closed?: { at: string; by: string };
   count: number;
   total: number;
   approvedTotal: number;
@@ -71,7 +73,10 @@ export function periodOf(list: Expense[]): string {
 }
 
 /** 사업별 결산보고서 초안 데이터. 판정 없이 합계와 "확인할 항목"만 담는다. */
-export function buildReport(all: Expense[], project: string, generatedAt = new Date().toISOString(), budget: Record<string, number> = {}): Report {
+/** 보고서에 적는 마감 표시. 예: "마감 2026-11-25 (다온 나눔모임)" */
+export const closedLine = (c: { at: string; by: string }): string => `마감 ${c.at.slice(0, 10)}${c.by ? ` (${c.by})` : ""}`;
+
+export function buildReport(all: Expense[], project: string, generatedAt = new Date().toISOString(), budget: Record<string, number> = {}, closed?: { at: string; by: string } | null): Report {
   const list = sortByDate(all.filter((e) => e.project === project));
   const order: Status[] = ["done", "pending_approval", "needs_evidence", "draft"];
   const byStatus = group(list, (e) => STATUS_LABEL[e.status]).sort(
@@ -93,6 +98,7 @@ export function buildReport(all: Expense[], project: string, generatedAt = new D
     project,
     period: periodOf(list),
     generatedAt,
+    ...(closed ? { closed: { at: closed.at, by: closed.by } } : {}),
     count: list.length,
     total: totalAmount(list),
     approvedTotal: totalAmount(list.filter((e) => e.status === "done")),
@@ -152,7 +158,7 @@ export function reportToHtml(r: Report, photos: ReportPhoto[] = []): string {
     `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows
       .map((row) => `<tr>${row.map((c, i) => `<td${numCols.includes(i) ? ' class="n"' : ""}>${esc(c)}</td>`).join("")}</tr>`)
       .join("")}</tbody></table>`;
-  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(r.project)} 결산보고서 초안</title>
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(r.project)} 결산보고서${r.closed ? "" : " 초안"}</title>
 <style>body{font-family:"Apple SD Gothic Neo","Malgun Gothic",sans-serif;max-width:860px;margin:32px auto;padding:0 16px;color:#1c2430;line-height:1.6}
 h1{font-size:24px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 8px;border-bottom:2px solid #1c2430;padding-bottom:4px}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{border:1px solid #b9c2cf;padding:6px 8px;text-align:left;vertical-align:top}
@@ -160,8 +166,8 @@ th{background:#eef1f5}.n{text-align:right;white-space:nowrap}.meta{color:#5d6878
 .sign div{flex:1;border-top:1px solid #1c2430;padding-top:6px;font-size:13px}.note{font-size:12px;color:#5d6878;margin-top:24px}
 .ev{margin:16px 0;break-inside:avoid}.ev h3{font-size:14px;margin:0 0 6px}.shots{display:flex;flex-wrap:wrap;gap:12px}
 figure{margin:0;width:calc(50% - 6px);break-inside:avoid}figure img{width:100%;border:1px solid #b9c2cf}figcaption{font-size:12px;color:#5d6878}</style></head><body>
-<h1>${esc(r.project)} 결산보고서 초안</h1>
-<p class="meta">지출 기간 ${esc(r.period)} · 작성 ${esc(r.generatedAt.slice(0, 10))} · 열린영수증</p>
+<h1>${esc(r.project)} 결산보고서${r.closed ? "" : " 초안"}</h1>
+<p class="meta">지출 기간 ${esc(r.period)} · 작성 ${esc(r.generatedAt.slice(0, 10))}${r.closed ? ` · ${esc(closedLine(r.closed))}` : ""} · 열린영수증</p>
 <h2>1. 요약</h2>
 ${table(["지출 건수", "지출 합계", "승인 완료 금액", "확인할 항목", "환급 필요 금액"], [[`${r.count}건`, won(r.total), won(r.approvedTotal), `${r.openItems.length}건`, won(r.reimbursementTotal)]], [0, 1, 2, 3, 4])}
 <h2>2. 예산 항목별 집행</h2>

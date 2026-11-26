@@ -38,6 +38,15 @@ export function normalizeClosings(raw: unknown): Closings {
 export const isClosed = (c: Closings | undefined, project: string): boolean => !!project && !!c?.[project] && !c[project].open;
 export const closingOf = (c: Closings | undefined, project: string): Closing | null => (isClosed(c, project) ? c![project] : null);
 
+/**
+ * 보고서에 싣는 마감 표시. 마감은 단체의 결정이므로 마감 처리한 사람이 아니라 단체 이름으로 적는다.
+ * (누가 처리했는지는 단체 안에서만 보는 마감 기록에 남는다.)
+ */
+export function closedBy(c: Closings | undefined, project: string, org: string): { at: string; by: string } | null {
+  const closing = closingOf(c, project);
+  return closing ? { at: closing.at, by: org.trim() } : null;
+}
+
 /** 마감하거나 풀 수 없는 이유. 할 수 있으면 null. 승인과 같은 사람이 한다. */
 export function closeBlock(who: Actor, policy: ApprovalPolicy = {}): string | null {
   if (!who.shared || policy.submitterApproves || who.role === "approver") return null;

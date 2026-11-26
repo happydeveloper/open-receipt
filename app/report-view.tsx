@@ -15,7 +15,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useEffect, useRef, useState } from "react";
 import { shortPrint } from "@/lib/ledger";
-import { spendRate, won, type Report } from "@/lib/report";
+import { closedLine, spendRate, won, type Report } from "@/lib/report";
 
 const num = (v: string) => <Text hasTabularNumbers textWrap="nowrap">{v}</Text>;
 const Note = ({ children }: { children: React.ReactNode }) => <Text type="supporting" color="secondary" display="block">{children}</Text>;
@@ -25,6 +25,7 @@ const amountCol = { key: "amount", header: "금액", align: "end" as const, rend
 export function ReportBody({ r, detail = true }: { r: Report; detail?: boolean }) {
   return (
     <>
+      {r.closed ? <Banner status="success" title="마감된 결산보고서입니다" description={`${closedLine(r.closed)}. 마감한 뒤에는 이 사업의 기록을 고칠 수 없습니다.`} data-testid="report-closed" /> : null}
       <Heading level={2}>1. 요약</Heading>
       <VStack className="scroll-x wide-table">
         <Table

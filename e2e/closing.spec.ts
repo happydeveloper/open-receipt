@@ -51,8 +51,11 @@ test("사업 마감: 승인자가 마감하면 모든 기기에서 기록이 잠
   await expect(park.getByTestId("unfinished")).toContainText("아직 끝나지 않은 기록이 1건 있습니다");
   await park.getByRole("button", { name: "마감 확인" }).click();
   await expect(park.locator("main")).toContainText(`${P} 사업을 마감했습니다.`);
-  await expect(park.getByTestId("closing")).toContainText("박대표 님이");
+  await expect(park.getByTestId("closing")).toContainText("다온 나눔모임 (가상)에서");
+  await expect(park.getByTestId("closing")).toContainText("마감 처리: 박대표"); // 처리한 사람은 구성원에게만 보인다
   await expect(park.getByRole("heading", { level: 1 })).toContainText("결산보고서 (마감)");
+  await expect(park.getByTestId("report-closed")).toContainText("(다온 나눔모임 (가상))");
+  await expect(park.getByTestId("report-closed")).not.toContainText("박대표"); // 보고서 본문에도 마감 표시가 붙는다 (인쇄와 공유에 함께 나간다)
   await park.getByRole("button", { name: "지출 목록으로" }).click();
   await syncDevice(park);
 
@@ -67,7 +70,7 @@ test("사업 마감: 승인자가 마감하면 모든 기기에서 기록이 잠
 
   //    총무 기기: 동기화하면 마감이 전해지고, 새 지출을 이 사업으로 올리지 못한다
   await syncDevice(page);
-  await expect(page.getByTestId("closed-note")).toContainText("박대표 님이");
+  await expect(page.getByTestId("closed-note")).toContainText("다온 나눔모임 (가상)에서");
   await expect(page.locator("#project")).toContainText("(마감)");
   await page.getByRole("button", { name: "+ 지출 추가" }).click();
   await page.getByRole("button", { name: "영수증이 없어요" }).click();

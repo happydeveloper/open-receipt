@@ -52,7 +52,7 @@ import { buildReport, reportPhotos, reportToHtml, won } from "@/lib/report";
 import { ReceiptGallery } from "../receipts";
 import { ReportBody } from "../report-view";
 import { DEMO_PROJECT } from "@/lib/seed";
-import { changedAfterClose, closeBlock, closeProject, closingOf, guardClosed, isClosed, normalizeClosings, reopenProject, unfinished } from "@/lib/closing";
+import { changedAfterClose, closedBy, closeBlock, closeProject, closingOf, guardClosed, isClosed, normalizeClosings, reopenProject, unfinished } from "@/lib/closing";
 import { addProject, BACKUP_KEY, backupAdvice, DEMO_SETTINGS, EMPTY_SETTINGS, loadSettings, makeBackup, missingForStart, normalizeBudgets, parseBackup, saveSettings, setBudget, SETTINGS_KEY, type Settings } from "@/lib/settings";
 import { filterExpenses, isFiltering, NO_FILTER, type ListFilter } from "@/lib/search";
 import { buildShare, encodeShare, LONG_LINK } from "@/lib/share";
@@ -893,7 +893,7 @@ export default function Home() {
     resetClose(); go("list"); setToast(`백업에서 기록 ${back.expenses.length}건${Object.keys(back.originals).length ? `과 원본 사진 ${Object.keys(back.originals).length}장` : ""}을 가져왔습니다.`);
   }
   async function makeShareLink() {
-    const r = buildReport(list, project, undefined, settings.budgets[project]);
+    const r = buildReport(list, project, undefined, settings.budgets[project], closedBy(settings.closed, project, settings.org));
     const proof = { fingerprint: await recordsFingerprint(mine), ledger: await summarize(live.current.led.ledger) };
     const code = await encodeShare({ ...buildShare(r, settings.org, { includeRows: share.rows === "rows", showNames: share.names === "show" }), proof });
     const link = `${window.location.origin}/r#${code}`;
@@ -1383,7 +1383,7 @@ export default function Home() {
     return (
       <Frame title="지출 상세" side={STATUS_LABEL[e.status]}>
         {toast ? <Banner status="success" title={toast} /> : null}
-        {closingOf(settings.closed, e.project) ? <Banner status="info" title="마감된 사업입니다" description={`${closingOf(settings.closed, e.project)!.by || "담당자"} 님이 ${closingOf(settings.closed, e.project)!.at.slice(0, 10)}에 마감했습니다. 기록을 올리거나 고칠 수 없습니다. 고치려면 결산보고서 화면에서 마감을 풀어야 합니다.`} data-testid="closed-note" /> : null}
+        {closingOf(settings.closed, e.project) ? <Banner status="info" title="마감된 사업입니다" description={`${settings.org || "단체"}에서 ${closingOf(settings.closed, e.project)!.at.slice(0, 10)}에 마감했습니다. 기록을 올리거나 고칠 수 없습니다. 고치려면 결산보고서 화면에서 마감을 풀어야 합니다.`} data-testid="closed-note" /> : null}
         {e.summary ? <Text>{e.summary}</Text> : null}
         <Card padding={3} data-testid="detail">
           <List hasDividers edge="flush" density="compact">
@@ -1472,7 +1472,7 @@ export default function Home() {
         ) : (
           <>
             <Selector id="project" label="사업·행사" options={projects.map((p) => ({ value: p, label: isClosed(settings.closed, p) ? `${p} (마감)` : p }))} value={project} onChange={(v) => { if (v) { setProject(v); resetClose(); setConfirmClosing(false); } }} />
-            {closingOf(settings.closed, project) ? <Banner status="info" title="마감된 사업입니다" description={`${closingOf(settings.closed, project)!.by || "담당자"} 님이 ${closingOf(settings.closed, project)!.at.slice(0, 10)}에 마감했습니다. 기록을 올리거나 고칠 수 없습니다. 고치려면 결산보고서 화면에서 마감을 풀어야 합니다.`} data-testid="closed-note" /> : null}
+            {closingOf(settings.closed, project) ? <Banner status="info" title="마감된 사업입니다" description={`${settings.org || "단체"}에서 ${closingOf(settings.closed, project)!.at.slice(0, 10)}에 마감했습니다. 기록을 올리거나 고칠 수 없습니다. 고치려면 결산보고서 화면에서 마감을 풀어야 합니다.`} data-testid="closed-note" /> : null}
             <HStack gap={2}>
               <Stat label="지출" value={`${mine.length}건`} />
               <Stat label="합계" value={won(totalAmount(mine))} />
@@ -1524,7 +1524,7 @@ export default function Home() {
     return (
       <Frame title="검토" side={meta.ws ? `${settings.role === "approver" ? "승인자" : "등록자"} ${SUBMITTER}` : `대표 ${APPROVER}`}>
         <Text type="supporting" color="secondary">{project}</Text>
-        {closingOf(settings.closed, project) ? <Banner status="info" title="마감된 사업입니다" description={`${closingOf(settings.closed, project)!.by || "담당자"} 님이 ${closingOf(settings.closed, project)!.at.slice(0, 10)}에 마감했습니다. 기록을 올리거나 고칠 수 없습니다. 고치려면 결산보고서 화면에서 마감을 풀어야 합니다.`} data-testid="closed-note" /> : null}
+        {closingOf(settings.closed, project) ? <Banner status="info" title="마감된 사업입니다" description={`${settings.org || "단체"}에서 ${closingOf(settings.closed, project)!.at.slice(0, 10)}에 마감했습니다. 기록을 올리거나 고칠 수 없습니다. 고치려면 결산보고서 화면에서 마감을 풀어야 합니다.`} data-testid="closed-note" /> : null}
         <Rows items={mine} onOpen={openDetail} dup={dupIds} who={!!meta.ws} />
         {toast ? <Banner status="success" title={toast} /> : null}
         {mine.some((e) => dupIds.has(e.id)) ? <Banner status="warning" title={`같은 영수증일 수 있는 기록 ${mine.filter((e) => dupIds.has(e.id)).length}건`} description="날짜와 금액이 같은 기록입니다. 목록에서 '중복 확인' 표시가 있는 건을 열어 확인해 주세요." data-testid="dup-review" /> : null}
@@ -1579,7 +1579,7 @@ export default function Home() {
 
   /* ---------- 결산보고서 ---------- */
   if (view === "report") {
-    const r = buildReport(list, project, undefined, settings.budgets[project]);
+    const r = buildReport(list, project, undefined, settings.budgets[project], closedBy(settings.closed, project, settings.org));
     return (
       <Frame title={`${project} 결산보고서${isClosed(settings.closed, project) ? " (마감)" : " 초안"}`} side={`지출 기간 ${r.period}`} wide>
         {toast ? <VStack className="noprint"><Banner status="success" title={toast} /></VStack> : null}
@@ -1602,7 +1602,8 @@ export default function Home() {
             <VStack gap={3}>
               <Heading level={2}>사업 마감</Heading>
               {closingOf(settings.closed, project) ? <>
-                <Banner status="success" title="마감된 사업입니다" description={`${closingOf(settings.closed, project)!.by || "담당자"} 님이 ${closingOf(settings.closed, project)!.at.slice(0, 10)}에 마감했습니다. 이 사업의 기록은 올리거나 고치거나 지울 수 없습니다.`} />
+                <Banner status="success" title="마감된 사업입니다" description={`${settings.org || "단체"}에서 ${closingOf(settings.closed, project)!.at.slice(0, 10)}에 마감했습니다. 이 사업의 기록은 올리거나 고치거나 지울 수 없습니다.`} />
+                <Note>마감 처리: {closingOf(settings.closed, project)!.by || "이름 없음"} · {new Date(closingOf(settings.closed, project)!.at).toLocaleString("ko-KR")}. 이 줄은 단체 구성원에게만 보이고, 보고서와 후원자용 보기에는 단체 이름으로 나갑니다.</Note>
                 {changedAfterClose(list, settings.closed, project).length ? <Banner status="warning" title={`마감 뒤에 바뀐 기록 ${changedAfterClose(list, settings.closed, project).length}건`} description={`마감을 모르던 다른 기기에서 고친 것이 들어왔습니다: ${changedAfterClose(list, settings.closed, project).slice(0, 5).map((e) => e.item || "항목 미입력").join(", ")}. 기록의 변경 이력을 확인해 주세요.`} data-testid="changed-after-close" /> : null}
                 {closeBlock(ME, POLICY) ? <Note>{closeBlock(ME, POLICY)}. 마감을 풀려면 승인자에게 요청하세요.</Note>
                   : confirmClosing
@@ -1622,7 +1623,7 @@ export default function Home() {
         </VStack>
         <HStack gap={2} className="noprint">
           <Main label="CSV 내려받기" onClick={() => download(`${project}_지출내역.csv`, toCsv(mine), "text/csv;charset=utf-8")} />
-          <Sub label="보고서 내려받기" onClick={() => download(`${project}_결산보고서_초안.html`, reportToHtml(r, reportPhotos(list, project)), "text/html;charset=utf-8")} />
+          <Sub label="보고서 내려받기" onClick={() => download(`${project}_결산보고서${r.closed ? "" : "_초안"}.html`, reportToHtml(r, reportPhotos(list, project)), "text/html;charset=utf-8")} />
         </HStack>
         <VStack className="noprint">
           <Card>

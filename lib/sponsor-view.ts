@@ -3,6 +3,7 @@
  * 후원자용 보기 자료. 사업별 결산보고서와 영수증 목록(가린 사진만)을 담는다.
  * 원본 사진, 메모, 내부 확인 항목은 들어가지 않는다.
  */
+import { closedBy, type Closings } from "./closing";
 import { evidenceLabel, sortByDate } from "./csv";
 import type { LedgerSummary } from "./ledger";
 import { hasPhoto, isPhoto, photosOf, slotsOf } from "./photos";
@@ -49,7 +50,7 @@ export interface ViewBundle {
 const photoSlots = (e: Expense) => slotsOf(e).filter((s) => hasPhoto(s.image));
 
 /** 후원자에게 보일 자료 묶음. 꺼져 있으면 "닫힘" 표시만 담는다. 이름 표시는 lib/share.ts의 가림 규칙을 그대로 쓴다. */
-export function buildViewBundle(expenses: Expense[], org: string, opts: { enabled: boolean; showNames: boolean; budgets?: Record<string, Record<string, number>> }, now = new Date().toISOString(), proof?: ViewProof): ViewBundle {
+export function buildViewBundle(expenses: Expense[], org: string, opts: { enabled: boolean; showNames: boolean; budgets?: Record<string, Record<string, number>>; closed?: Closings }, now = new Date().toISOString(), proof?: ViewProof): ViewBundle {
   if (!opts.enabled) return { v: 1, org, publishedAt: now, showNames: false, disabled: true, projects: [] };
   const names = [...new Set(expenses.map((e) => e.project).filter(Boolean))].sort();
   return {
@@ -60,7 +61,7 @@ export function buildViewBundle(expenses: Expense[], org: string, opts: { enable
     ledger: proof?.ledger,
     projects: names.map((project) => {
       const list = sortByDate(expenses.filter((e) => e.project === project));
-      const shared = buildShare(buildReport(expenses, project, now, opts.budgets?.[project]), org, { includeRows: true, showNames: opts.showNames }, now);
+      const shared = buildShare(buildReport(expenses, project, now, opts.budgets?.[project], closedBy(opts.closed, project, org)), org, { includeRows: true, showNames: opts.showNames }, now);
       return {
         project,
         fingerprint: proof?.prints[project],
