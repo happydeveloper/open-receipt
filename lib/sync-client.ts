@@ -16,7 +16,12 @@ export interface SyncApi {
   putDoc(id: string, token: string, body: unknown): Promise<{ status: number; body: any }>;
   getImage(id: string, eid: string, kind?: "img" | "orig" | "view"): Promise<{ status: number; body: any }>;
   putImage(id: string, eid: string, token: string, body: unknown, kind?: "img" | "orig" | "view"): Promise<{ status: number; body: any }>;
+  delImage(id: string, eid: string, token: string, kind?: "img" | "orig" | "view"): Promise<{ status: number; body: any }>;
+  /** 기록 한 건에 딸린 사진을 모두 지운다 (가린 사진, 원본, 후원자용, 함께 묶은 자료) */
+  purgeRecord(id: string, eid: string, token: string): Promise<{ status: number; body: any }>;
   getView(id: string): Promise<{ status: number; body: any }>;
+  /** 후원자용으로 올려 둔 사진을 모두 지운다 */
+  clearView(id: string, token: string): Promise<{ status: number; body: any }>;
   putView(id: string, token: string, body: unknown): Promise<{ status: number; body: any }>;
 }
 export interface SyncLocal {
@@ -43,6 +48,17 @@ export interface SyncResult extends SyncLocal {
 }
 export class SyncError extends Error {}
 
+/** 후원자용 보기를 닫고 서버의 사진을 지웠다는 표식 */
+const VIEW_CLEARED = "view-cleared";
+/** 지운 기록의 사진을 서버에서 지웠다는 표식의 머리말 */
+const GONE = "gone:";
+/** 올렸다는 표식에서 사진 이름을 꺼낸다. 사진 표식이 아니면 null. 표식은 "이름:길이"(가린 사진), "o:이름"(원본), "v:이름:길이"(후원자용)다. */
+function photoKeyOfMark(u: string): string | null {
+  if (u.startsWith("view:") || u.startsWith(GONE) || !u.includes(":")) return null;
+  if (u.startsWith("o:")) return u.slice(2);
+  if (u.startsWith("v:")) return u.slice(2, u.lastIndexOf(":"));
+  return u.slice(0, u.lastIndexOf(":"));
+}
 const mark = (id: string, image: string) => `${id}:${image.length}`;
 const uniq = (list: string[]) => [...new Set(list.map((s) => s.trim()).filter(Boolean))];
 
@@ -117,6 +133,27 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
       }
     }
 
+    // 지운 기록의 사진을 서버에서도 지운다. 삭제 기록은 모든 기기에 전해지므로, 사진을 올린 적 없는 기기도 지울 수 있다.
+    // 지웠다는 표식(gone:)을 남겨 한 번만 부른다.
+    for (const id of Object.keys(merged.tombstones)) {
+      if (uploaded.has(`${GONE}${id}`)) continue;
+      const res = await api.purgeRecord(ws.id, id, token);
+      if (res.status !== 200) continue;
+      uploaded.add(`${GONE}${id}`);
+      for (const u of [...uploaded]) {
+        const key = photoKeyOfMark(u);
+        if (key !== null && (key === id || key.startsWith(`${id}-x-`))) uploaded.delete(u);
+      }
+    }
+    // 뗀 자료의 사진: 내가 올렸다는 표식은 있는데 지금 어느 기록에도 없는 사진은 서버에서 지운다.
+    const live = new Set(expenses.flatMap(slotsOf).map((s) => s.key));
+    for (const u of [...uploaded]) {
+      const key = photoKeyOfMark(u);
+      if (key === null || u.startsWith("v:") || live.has(key)) continue; // 후원자용(v:)은 아래에서 따로 정리한다
+      const res = await api.delImage(ws.id, key, token, u.startsWith("o:") ? "orig" : "img");
+      if (res.status === 200) uploaded.delete(u);
+    }
+
     // 후원자용 보기: 켜져 있으면 결산보고서와 가린 사진을 후원자 열쇠로 암호화해 올린다. 꺼져 있으면 닫힘 표시만 올린다.
     const viewOn = shared.sponsorView === true;
     // 후원자가 나중에 바뀌었는지 견줄 수 있게 지문을 함께 낸다.
@@ -136,13 +173,33 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
     }
     // 후원자용 사진은 보고서 묶음과 따로 챙긴다. 보고서가 그대로여도, 지난번에 올리지 못한 사진이나
     // 바꿔 붙인 사진은 이번에 올린다 (예전에는 보고서가 바뀔 때만 올려서 사진이 빠진 채 남을 수 있었다).
+    const viewMarks = [...uploaded].filter((u) => u.startsWith("v:"));
     if (viewOn) {
       const viewer = await viewerWorkspace(ws);
-      for (const [key, img] of viewImages(expenses)) {
+      const wanted = viewImages(expenses);
+      for (const [key, img] of wanted) {
         const m = `v:${key}:${img.length}`;
         if (uploaded.has(m)) continue;
         const up = await api.putImage(ws.id, key, token, { data: await encryptText(viewer, img) }, "view");
         if (up.status === 200) uploaded.add(m);
+      }
+      // 지운 기록이나 뗀 자료의 사진은 후원자용 자리에서도 지운다.
+      for (const m of viewMarks) {
+        const key = m.slice(2, m.lastIndexOf(":"));
+        if (wanted.has(key)) { if (m !== `v:${key}:${wanted.get(key)!.length}`) uploaded.delete(m); continue; }
+        const res = await api.delImage(ws.id, key, token, "view");
+        if (res.status === 200) uploaded.delete(m);
+      }
+      uploaded.delete(VIEW_CLEARED);
+    } else if (viewMarks.length || (hadView && !uploaded.has(VIEW_CLEARED))) {
+      // 후원자용 보기를 닫으면 올려 둔 사진을 서버에서 모두 지운다. 닫힘 표시만으로는 예전 링크를 가진 사람이
+      // 사진을 계속 받아 열 수 있다. 어느 기기가 닫았든, 닫힌 것을 본 기기가 지우기를 시도한다 (여러 번 해도 같다).
+      const res = await api.clearView(ws.id, token);
+      // 다시 열면 모든 사진을 새로 올리도록, 올렸다는 표식도 지운다.
+      // 지웠다는 표식을 남겨, 닫혀 있는 동안 동기화할 때마다 다시 부르지 않는다.
+      if (res.status === 200) {
+        for (const m of viewMarks) uploaded.delete(m);
+        uploaded.add(VIEW_CLEARED);
       }
     }
 
@@ -172,7 +229,10 @@ export function httpApi(fetchImpl: typeof fetch = fetch): SyncApi {
     putDoc: (id, token, body) => put(`/api/sync/${id}`, token, body),
     getImage: (id, eid, kind = "img") => call(`/api/sync/${id}/img/${encodeURIComponent(eid)}?kind=${kind}`),
     putImage: (id, eid, token, body, kind = "img") => put(`/api/sync/${id}/img/${encodeURIComponent(eid)}?kind=${kind}`, token, body),
+    delImage: (id, eid, token, kind = "img") => call(`/api/sync/${id}/img/${encodeURIComponent(eid)}?kind=${kind}`, { method: "DELETE", headers: { "x-write-token": token } }),
+    purgeRecord: (id, eid, token) => call(`/api/sync/${id}/img/${encodeURIComponent(eid)}?kind=all`, { method: "DELETE", headers: { "x-write-token": token } }),
     getView: (id) => call(`/api/sync/${id}/view`),
+    clearView: (id, token) => call(`/api/sync/${id}/view`, { method: "DELETE", headers: { "x-write-token": token } }),
     putView: (id, token, body) => put(`/api/sync/${id}/view`, token, body),
   };
 }

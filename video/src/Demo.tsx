@@ -18,6 +18,8 @@ export type EdlItem = {
   text: string;
   frames: number;
   audio: string;
+  /** 이 장면에서 쓰이는 Liner API (있을 때만 표시) */
+  api?: string;
   /** 화면 장면일 때: 녹화 파일, 시작 위치(초), 재생 속도 */
   clip?: string;
   startSec?: number;
@@ -27,12 +29,12 @@ export type Edl = { title: string; items: EdlItem[] };
 
 const FONT = '"Apple SD Gothic Neo", "Noto Sans KR", sans-serif';
 const INK = "#1c2430", MUTED = "#5d6878", GREEN = "#2f9e62", PAPER = "#f4f1ea";
-const ROLE_COLOR: Record<string, string> = { "등록자 · 총무": "#2f6fde", "승인자 · 대표": "#8a4fd6", "후원자": "#d9822b", "프레이미": GREEN };
+const ROLE_COLOR: Record<string, string> = { "등록자 · 총무": "#2f6fde", "승인자 · 대표": "#8a4fd6", "후원자": "#d9822b", "열린영수증": GREEN };
 // 내레이션은 소리 나는 대로 적었으므로, 자막에서는 원래 표기로 돌려놓는다.
 const caption = (t: string) => t.replace(/에이아이/g, "AI").replace(/에이피아이/g, "API");
 const HEADLINE: Record<string, [string, string]> = {
   n0: ["행사가 끝나면 시작되는 일", "흩어진 영수증, 다시 묻는 목적, 밤새는 정산"],
-  n1: ["열린영수증", "영수증만 올리면 결산보고서까지"],
+  n1: ["열린영수증", "작은 단체를 위한 정산 에이전트 · Liner API로 동작"],
   n8: ["Liner API로 움직입니다", "Liner Model API  ·  Liner Search API"],
   n9: ["준비는 에이전트가, 결정은 사람이", "open-receipt-six.vercel.app"],
 };
@@ -102,10 +104,19 @@ export const Demo = ({ title, items }: Edl) => {
             </div>
           ) : null}
           <div style={{ position: "absolute", left: 760, top: 64, right: 90, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontSize: 30, fontWeight: 800, color: MUTED }}>{title}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontSize: 30, fontWeight: 800, color: INK }}>{title}</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: GREEN }}>Liner Model API · Liner Search API로 동작합니다</div>
+            </div>
             <div style={{ background: ROLE_COLOR[cur.role] ?? INK, color: "#fff", borderRadius: 999, padding: "12px 30px", fontSize: 32, fontWeight: 800 }}>{cur.role}의 화면</div>
           </div>
-          <div style={{ position: "absolute", left: 760, top: 170 }}><Chapters items={chapters} current={cur.chapter} /></div>
+          <div style={{ position: "absolute", left: 760, top: 190 }}><Chapters items={chapters} current={cur.chapter} /></div>
+          {cur.api ? (
+            <div style={{ position: "absolute", left: 760, top: 560, display: "flex", alignItems: "center", gap: 14, background: INK, color: "#fff", borderRadius: 18, padding: "16px 26px", fontSize: 30, fontWeight: 800 }}>
+              <div style={{ width: 16, height: 16, borderRadius: 8, background: "#7ee2a8", opacity: 0.55 + 0.45 * Math.abs(Math.sin(frame / 8)) }} />
+              지금 쓰는 것: {cur.api}
+            </div>
+          ) : null}
           <div style={{ position: "absolute", left: 730, right: 90, bottom: 70, display: "flex", alignItems: "flex-end", gap: 26 }}>
             <div style={{ flex: "none" }}><Framey size={230} talking={local > 6 && local < cur.frames - 12} /></div>
             <div style={{ flex: 1, paddingBottom: 26 }}><Bubble text={cur.text} local={local} /></div>

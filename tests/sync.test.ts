@@ -9,7 +9,7 @@ import { memoryBag } from "@/lib/originals";
 import type { ViewBundle } from "@/lib/sponsor-view";
 import { IMAGE_REF, mergeExpenses, stripImages, touchChanged } from "@/lib/sync-merge";
 import { syncNow, SyncError, type SyncApi, type SyncLocal } from "@/lib/sync-client";
-import { getDoc, getImage, getView, MemoryStore, putDoc, putImage, putView, type SyncStore } from "@/lib/sync-store";
+import { clearViewImages, delImage, getDoc, getImage, getView, MemoryStore, purgeRecordImages, putDoc, putImage, putView, type SyncStore } from "@/lib/sync-store";
 import { demoSnackExpense, seedExpenses } from "@/lib/seed";
 import { approveExpense } from "@/lib/status";
 import type { Expense } from "@/lib/types";
@@ -26,7 +26,10 @@ function api(store: SyncStore | null): SyncApi {
     putDoc: async (id, token, body) => out(await putDoc(store, id, token, body)),
     getImage: async (id, eid, kind) => out(await getImage(store, id, eid, kind)),
     putImage: async (id, eid, token, body, kind) => out(await putImage(store, id, eid, token, body, kind)),
+    delImage: async (id, eid, token, kind) => out(await delImage(store, id, eid, token, kind)),
+    purgeRecord: async (id, eid, token) => out(await purgeRecordImages(store, id, eid, token)),
     getView: async (id) => out(await getView(store, id)),
+    clearView: async (id, token) => out(await clearViewImages(store, id, token)),
     putView: async (id, token, body) => out(await putView(store, id, token, body)),
   };
 }

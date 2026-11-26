@@ -10,6 +10,7 @@
  *  6. 단체 공간을 만들고 후원자용 보기를 열면, 후원자가 링크만으로 사진 두 장을 본다.
  *  7. 승인자 기기도 사진 두 장과 거래명세서 원본을 받는다.
  *  8. 거래명세서를 떼면 후원자 화면에서도 한 장으로 줄어든다.
+ *  9. 기록을 지우면 서버에 올려 둔 사진(가린 사진, 원본, 후원자용)도 지워진다.
  *
  * 영수증과 거래명세서는 모두 가상 자료다.
  */
@@ -154,4 +155,17 @@ test("한 거래로 묶기: 영수증에 거래명세서를 붙이면 한 건으
   await sponsor.getByRole("button", { name: "새로 고침" }).click();
   await expect(sponsor.locator("#report-total")).toHaveText("56,900원", { timeout: 30_000 });
   await expect(sponsor.getByTestId("receipt")).toHaveCount(1);
+  await expect(sponsor.getByTestId("receipt").locator("img")).toHaveCount(1, { timeout: 20_000 });
+
+  // 9. 기록을 지우면 서버의 사진도 지워진다: 가린 사진, 원본, 후원자용 모두
+  const spaceId = viewerLink.split("#")[1].split(".")[0];
+  const eid = (await sponsor.evaluate(() => performance.getEntriesByType("resource").map((r) => r.name).filter((n) => n.includes("kind=view")).at(-1) ?? "")).match(/img\/([^?]+)\?/)?.[1];
+  expect(eid).toBeTruthy();
+  for (const kind of ["img", "orig", "view"]) expect((await page.request.get(`/api/sync/${spaceId}/img/${eid}?kind=${kind}`)).status(), kind).toBe(200);
+  await page.getByText("행사 다과").first().click();
+  await page.getByRole("button", { name: "삭제", exact: true }).click();
+  await page.getByRole("button", { name: "삭제 확인" }).click();
+  await syncDevice(page);
+  // 배포 환경의 저장소는 지운 파일을 몇 초 동안 더 내줄 수 있어, 조금 기다리며 확인한다.
+  for (const kind of ["img", "orig", "view"]) await expect.poll(async () => (await page.request.get(`/api/sync/${spaceId}/img/${eid}?kind=${kind}`)).status(), { message: kind, timeout: 120_000, intervals: [1000, 3000, 5000] }).toBe(404);
 });

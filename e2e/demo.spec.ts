@@ -470,6 +470,14 @@ test("영수증 보기와 역할별 공유: 등록자·승인자는 원본까지
   await syncDevice(page);
   await sponsor.getByRole("button", { name: "새로 고침" }).click();
   await expect(sponsor.getByText("단체에서 후원자용 보기를 닫았습니다.").first()).toBeVisible({ timeout: 20_000 });
+  // 닫으면 서버의 후원자용 사진도 지워진다. 예전 링크에 든 주소로 사진을 직접 받으려 해도 없다.
+  const spaceId = viewerLink.split("#")[1].split(".")[0];
+  const eid = (await sponsor.evaluate(() => performance.getEntriesByType("resource").map((r) => r.name).find((n) => n.includes("kind=view")) ?? "")).match(/img\/([^?]+)\?/)?.[1];
+  expect(eid).toBeTruthy();
+  // 배포 환경의 저장소는 지운 파일을 길게는 1분쯤 캐시에서 내줄 수 있어, 그 안에 사라지는지 본다.
+  const t0 = Date.now();
+  await expect.poll(async () => (await sponsor.request.get(`/api/sync/${spaceId}/img/${eid}?kind=view`)).status(), { timeout: 120_000, intervals: [1000, 3000, 5000] }).toBe(404);
+  console.log(`후원자용 사진이 사라지기까지 ${Math.round((Date.now() - t0) / 1000)}초`);
 });
 
 test("영수증 여러 장 올리기: 한꺼번에 올리면 에이전트가 한 장씩 초안으로 정리하고, 한꺼번에 확정한다", async ({ page }) => {

@@ -204,6 +204,44 @@ export async function putImage(store: SyncStore | null, id: string, eid: string,
   return json({ ok: true });
 }
 
+/** 사진 한 장을 지운다. 구성원만 할 수 있다. */
+export async function delImage(store: SyncStore | null, id: string, eid: string, token: string | null, kind: ImageKind = "img"): Promise<Response> {
+  if (!store) return json({ error: NOT_SET }, 503);
+  if (!ID.test(id) || !EID.test(eid)) return json({ error: "잘못된 주소입니다." }, 400);
+  if (!(await authorized(store, id, token))) return json({ error: "쓰기 권한이 없습니다." }, 403);
+  await store.del(`sync/${id}/${KIND_DIR[kind]}/${eid}`);
+  return json({ ok: true });
+}
+/**
+ * 기록 한 건에 딸린 사진을 모두 지운다: 가린 사진, 원본, 후원자용 사진, 그리고 함께 묶은 자료의 사진까지.
+ * 기록을 지웠을 때 부른다. 사진 이름은 "기록 id" 또는 "기록 id-x-자료 id"다 (lib/photos.ts).
+ */
+export async function purgeRecordImages(store: SyncStore | null, id: string, eid: string, token: string | null): Promise<Response> {
+  if (!store) return json({ error: NOT_SET }, 503);
+  if (!ID.test(id) || !EID.test(eid)) return json({ error: "잘못된 주소입니다." }, 400);
+  if (!(await authorized(store, id, token))) return json({ error: "쓰기 권한이 없습니다." }, 403);
+  let removed = 0;
+  for (const dir of Object.values(KIND_DIR)) {
+    const base = `sync/${id}/${dir}/${eid}`;
+    // 이름이 비슷한 다른 기록(예: e_1과 e_10)의 사진을 건드리지 않도록 정확히 가려낸다.
+    for (const k of await store.list(base)) if (k === base || k.startsWith(`${base}-x-`)) { await store.del(k); removed++; }
+  }
+  return json({ ok: true, removed });
+}
+
+/**
+ * 후원자용으로 올려 둔 사진을 모두 지운다. 후원자용 보기를 닫을 때 부른다.
+ * 닫힘 표시만 올리고 사진을 남겨 두면, 예전 링크를 가진 사람이 사진을 계속 받아 열 수 있다.
+ */
+export async function clearViewImages(store: SyncStore | null, id: string, token: string | null): Promise<Response> {
+  if (!store) return json({ error: NOT_SET }, 503);
+  if (!ID.test(id)) return json({ error: "잘못된 주소입니다." }, 400);
+  if (!(await authorized(store, id, token))) return json({ error: "쓰기 권한이 없습니다." }, 403);
+  const keys = await store.list(`sync/${id}/${KIND_DIR.view}/`);
+  for (const k of keys) await store.del(k);
+  return json({ ok: true, removed: keys.length });
+}
+
 /* ---------- 후원자용 보기 자료 (후원자 열쇠로 암호화된 것) ---------- */
 const viewKey = (id: string, n: number) => `sync/${id}/view-${String(n).padStart(8, "0")}.json`;
 async function viewNumbers(store: SyncStore, id: string): Promise<number[]> {

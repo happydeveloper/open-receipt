@@ -16,7 +16,7 @@ import { hydrateImages, LOCAL_IMAGE, loadExpenses, saveExpenses } from "@/lib/st
 import { syncNow, type SyncApi, type SyncLocal } from "@/lib/sync-client";
 import { decryptText, newWorkspace, viewerWorkspace } from "@/lib/sync-crypto";
 import { IMAGE_REF, stripImages } from "@/lib/sync-merge";
-import { getDoc, getImage, getView, MemoryStore, putDoc, putImage, putView, type SyncStore } from "@/lib/sync-store";
+import { clearViewImages, delImage, getDoc, getImage, getView, MemoryStore, purgeRecordImages, putDoc, putImage, putView, type SyncStore } from "@/lib/sync-store";
 import type { Expense } from "@/lib/types";
 
 const RECEIPT = "data:image/jpeg;base64," + "R".repeat(600);
@@ -38,7 +38,10 @@ function api(store: SyncStore): SyncApi {
     putDoc: async (id, token, body) => out(await putDoc(store, id, token, body)),
     getImage: async (id, eid, kind) => out(await getImage(store, id, eid, kind)),
     putImage: async (id, eid, token, body, kind) => out(await putImage(store, id, eid, token, body, kind)),
+    delImage: async (id, eid, token, kind) => out(await delImage(store, id, eid, token, kind)),
+    purgeRecord: async (id, eid, token) => out(await purgeRecordImages(store, id, eid, token)),
     getView: async (id) => out(await getView(store, id)),
+    clearView: async (id, token) => out(await clearViewImages(store, id, token)),
     putView: async (id, token, body) => out(await putView(store, id, token, body)),
   };
 }
@@ -167,5 +170,107 @@ describe("한 거래로 묶기", () => {
     const viewer = await viewerWorkspace(ws);
     const bundle = JSON.parse((await decryptText(viewer, (await (await getView(store, ws.id)).json()).data))!) as ViewBundle;
     expect(bundle.projects[0].receipts[0].photos).toHaveLength(3);
+  });
+
+  it("후원자용 보기를 닫으면 서버의 후원자용 사진이 지워져, 예전 링크로 사진을 받을 수 없다", async () => {
+    const store = new MemoryStore();
+    const ws = newWorkspace();
+    const a = await syncNow(ws, device([grouped()]), api(store), "2026-11-21T00:00:00.000Z");
+    const vimg = () => [...store.data.keys()].filter((k) => k.includes("/vimg/"));
+    expect(vimg()).toHaveLength(3);
+
+    // 닫는다
+    const calls: string[] = [];
+    const counting: SyncApi = { ...api(store), clearView: async (id, token) => { calls.push("clear"); return api(store).clearView(id, token); } };
+    const closed = await syncNow(ws, { ...a, shared: { ...shared, sponsorView: false }, sharedAt: "2026-11-22T00:00:00.000Z" }, counting, "2026-11-22T00:00:00.000Z");
+    expect(vimg()).toEqual([]);
+    for (const key of ["demo-snack", "demo-snack-x-st1", "demo-snack-x-or1"]) expect((await getImage(store, ws.id, key, "view")).status).toBe(404);
+    // 구성원용 사진은 그대로 있다
+    expect((await getImage(store, ws.id, "demo-snack", "img")).status).toBe(200);
+    // 닫혀 있는 동안 다시 동기화해도 또 지우러 가지 않는다
+    const again = await syncNow(ws, closed, counting, "2026-11-22T00:05:00.000Z");
+    expect(calls).toEqual(["clear"]);
+
+    // 다시 열면 사진을 모두 새로 올린다
+    await syncNow(ws, { ...again, shared: { ...shared, sponsorView: true }, sharedAt: "2026-11-23T00:00:00.000Z" }, counting, "2026-11-23T00:00:00.000Z");
+    expect(vimg()).toHaveLength(3);
+  });
+
+  it("다른 기기가 닫았어도, 사진을 올렸던 기기가 동기화하면 지우고 표식을 버린다. 열쇠가 없으면 지우지 못한다", async () => {
+    const store = new MemoryStore();
+    const ws = newWorkspace();
+    const a = await syncNow(ws, device([grouped()]), api(store), "2026-11-21T00:00:00.000Z");
+    // 승인자 기기가 닫는다 (이 기기는 사진을 올린 적이 없다)
+    const b = await syncNow(ws, device([]), api(store), "2026-11-21T01:00:00.000Z");
+    await syncNow(ws, { ...b, shared: { ...shared, sponsorView: false }, sharedAt: "2026-11-22T00:00:00.000Z" }, api(store), "2026-11-22T00:00:00.000Z");
+    expect([...store.data.keys()].filter((k) => k.includes("/vimg/"))).toEqual([]);
+    // 총무 기기: 닫힌 것을 받아 오고, 올렸다는 표식을 버린다
+    const a2 = await syncNow(ws, a, api(store), "2026-11-22T01:00:00.000Z");
+    expect(a2.shared.sponsorView).toBe(false);
+    expect(a2.uploaded.filter((u) => u.startsWith("v:"))).toEqual([]);
+    // 쓰기 증표 없이는 지울 수 없다
+    await syncNow(ws, { ...a2, shared: { ...shared, sponsorView: true }, sharedAt: "2026-11-23T00:00:00.000Z" }, api(store), "2026-11-23T00:00:00.000Z");
+    expect((await clearViewImages(store, ws.id, "wrong-token-wrong-token")).status).toBe(403);
+    expect((await delImage(store, ws.id, "demo-snack", null, "view")).status).toBe(403);
+    expect((await getImage(store, ws.id, "demo-snack", "view")).status).toBe(200);
+  });
+
+  it("후원자용 보기가 열려 있을 때 자료를 떼면, 그 사진은 후원자용 자리에서도 지워진다", async () => {
+    const store = new MemoryStore();
+    const ws = newWorkspace();
+    const a = await syncNow(ws, device([grouped()]), api(store), "2026-11-21T00:00:00.000Z");
+    const less = { ...detachEvidence(grouped(), "st1", "김총무"), updatedAt: "2026-11-22T00:00:00.000Z" };
+    await syncNow(ws, { ...a, expenses: [less] }, api(store), "2026-11-22T00:00:00.000Z");
+    expect((await getImage(store, ws.id, "demo-snack-x-st1", "view")).status).toBe(404);
+    expect((await getImage(store, ws.id, "demo-snack-x-or1", "view")).status).toBe(200);
+  });
+
+  it("기록을 지우면 그 기록의 사진이 서버에서 모두 지워진다: 가린 사진, 원본, 후원자용, 함께 묶은 자료까지", async () => {
+    const store = new MemoryStore();
+    const ws = newWorkspace();
+    const bag = memoryBag();
+    await bag.put("demo-snack", "data:image/jpeg;base64," + "O".repeat(900));
+    await bag.put(photoKey("demo-snack", "st1"), "data:image/jpeg;base64," + "P".repeat(900));
+    // 이름이 비슷한 다른 기록. 이 기록의 사진은 남아야 한다.
+    const neighbor: Expense = { ...demoSnackExpense(), id: "demo-snack2", evidence: { kind: "receipt", image: RECEIPT }, updatedAt: "2026-11-20T10:00:00.000Z" };
+    const a = await syncNow(ws, device([grouped(), neighbor]), api(store), "2026-11-21T00:00:00.000Z", bag);
+    const photos = () => [...store.data.keys()].filter((k) => /\/(img|orig|vimg)\//.test(k)).map((k) => k.split("/").slice(2).join("/")).sort();
+    expect(photos()).toHaveLength(3 + 2 + 3 + 2); // 가린 사진 3, 원본 2, 후원자용 3, 이웃 기록 2(가린 사진, 후원자용)
+
+    const calls: string[] = [];
+    const counting: SyncApi = { ...api(store), purgeRecord: async (id, eid, token) => { calls.push(eid); return api(store).purgeRecord(id, eid, token); } };
+    const gone = await syncNow(ws, { ...a, expenses: [neighbor], tombstones: { "demo-snack": "2026-11-22T00:00:00.000Z" } }, counting, "2026-11-22T00:00:00.000Z", bag);
+    expect(photos()).toEqual(["img/demo-snack2", "vimg/demo-snack2"]);
+    // 올렸다는 표식도 정리되고, 다음 동기화에서 또 지우러 가지 않는다
+    expect(gone.uploaded.filter((u) => u.includes("demo-snack") && !u.includes("demo-snack2") && !u.startsWith("gone:"))).toEqual([]);
+    await syncNow(ws, gone, counting, "2026-11-22T00:05:00.000Z", bag);
+    expect(calls).toEqual(["demo-snack"]);
+    expect(photos()).toEqual(["img/demo-snack2", "vimg/demo-snack2"]);
+  });
+
+  it("사진을 올린 적 없는 기기가 기록을 지워도 서버의 사진이 지워진다. 열쇠가 없으면 지우지 못한다", async () => {
+    const store = new MemoryStore();
+    const ws = newWorkspace();
+    await syncNow(ws, device([grouped()]), api(store), "2026-11-21T00:00:00.000Z");
+    const b = await syncNow(ws, device([]), api(store), "2026-11-21T01:00:00.000Z");
+    expect((await purgeRecordImages(store, ws.id, "demo-snack", "wrong-token-wrong-token")).status).toBe(403);
+    expect((await getImage(store, ws.id, "demo-snack", "img")).status).toBe(200);
+    await syncNow(ws, { ...b, expenses: [], tombstones: { "demo-snack": "2026-11-22T00:00:00.000Z" } }, api(store), "2026-11-22T00:00:00.000Z");
+    expect([...store.data.keys()].filter((k) => /\/(img|orig|vimg)\//.test(k))).toEqual([]);
+  });
+
+  it("자료를 떼면 그 자료의 가린 사진과 원본도 서버에서 지워진다", async () => {
+    const store = new MemoryStore();
+    const ws = newWorkspace();
+    const bag = memoryBag();
+    await bag.put(photoKey("demo-snack", "st1"), "data:image/jpeg;base64," + "P".repeat(900));
+    const a = await syncNow(ws, device([grouped()]), api(store), "2026-11-21T00:00:00.000Z", bag);
+    expect((await getImage(store, ws.id, "demo-snack-x-st1", "orig")).status).toBe(200);
+    const less = { ...detachEvidence(grouped(), "st1", "김총무"), updatedAt: "2026-11-22T00:00:00.000Z" };
+    await syncNow(ws, { ...a, expenses: [less] }, api(store), "2026-11-22T00:00:00.000Z", bag);
+    for (const kind of ["img", "orig", "view"] as const) expect((await getImage(store, ws.id, "demo-snack-x-st1", kind)).status).toBe(404);
+    // 남은 사진은 그대로다
+    expect((await getImage(store, ws.id, "demo-snack", "img")).status).toBe(200);
+    expect((await getImage(store, ws.id, "demo-snack-x-or1", "img")).status).toBe(200);
   });
 });

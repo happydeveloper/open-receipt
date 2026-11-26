@@ -21,14 +21,16 @@ const FPS = 30, LEAD = 0.15; // 녹화는 시각을 재기 조금 전에 시작�
 const items = [];
 for (const s of script.segments) {
   const say = speech[s.id] ?? 3;
-  const base = { id: s.id, kind: s.kind, chapter: s.chapter, role: s.role, text: s.text, audio: `audio/${s.id}.wav` };
+  const base = { id: s.id, kind: s.kind, chapter: s.chapter, role: s.role, text: s.text, audio: `audio/${s.id}.wav`, ...(s.api ? { api: s.api } : {}) };
   if (s.kind === "title") { items.push({ ...base, frames: Math.round((say + 0.9) * FPS) }); continue; }
   const m = timeline.marks.find((x) => x.id === s.id);
   if (!m) { console.log(`건너뜀: ${s.id} (녹화에 없는 장면)`); continue; }
   const natural = (m.to - m.from) / 1000;
   // 말이 끝날 때까지는 보여 주고, 그보다 2.5초 넘게 길면 줄인다.
   const show = Math.max(say + 0.5, Math.min(natural, say + 2.5));
-  items.push({ ...base, frames: Math.round(show * FPS), clip: `clips/${m.dev}.mp4`, startSec: m.from / 1000 + LEAD, rate: Math.max(1, natural / show) });
+  items.push({ ...base, frames: Math.round(show * FPS), clip: `clips/${m.dev}.mp4`, startSec: m.from / 1000 + LEAD, rate: natural / show });
+  // 말이 화면보다 조금 길면 화면을 살짝 느리게 돌려 맞춘다. 많이 길면 다시 녹화해야 한다.
+  if (natural / show < 0.8) throw new Error(`${s.id}: 내레이션이 화면보다 너무 깁니다. 녹화를 다시 하세요.`);
 }
 const total = items.reduce((n, it) => n + it.frames, 0) / FPS;
 writeFileSync(path.join(dir, "raw/edl.json"), JSON.stringify({ title: script.title, items }, null, 2));
@@ -43,7 +45,34 @@ const found = execFileSync("find", [path.join(cache, shell), "-type", "f", "-nam
 mkdirSync(path.join(dir, "out"), { recursive: true });
 const still = process.argv.indexOf("--still");
 const common = ["--props=raw/edl.json", `--browser-executable=${found}`, "--log=error"];
-const args = still > -1
-  ? ["remotion", "still", "src/index.ts", "Demo", `out/frame-${process.argv[still + 1]}.png`, `--frame=${process.argv[still + 1]}`, ...common]
-  : ["remotion", "render", "src/index.ts", "Demo", "out/open-receipt-demo.mp4", "--codec=h264", "--crf=20", ...common];
-execFileSync("npx", args, { cwd: dir, stdio: "inherit" });
+if (still > -1) {
+  execFileSync("npx", ["remotion", "still", "src/index.ts", "Demo", `out/frame-${process.argv[still + 1]}.png`, `--frame=${process.argv[still + 1]}`, ...common], { cwd: dir, stdio: "inherit" });
+} else {
+  // 한 번에 통째로 인코딩하면 가끔 한 프레임에서 멈춘다. 장면 경계에서 몇 토막으로 나눠 만들고(멈추면 그 토막만 다시),
+  // 마지막에 이어 붙인다. 장면 경계는 말이 끝난 자리라 이은 곳이 티 나지 않는다.
+  const parts = [];
+  let from = 0, at = 0;
+  for (const [i, it] of items.entries()) {
+    at += it.frames;
+    if (at - from >= 20 * FPS || i === items.length - 1) { parts.push([from, at - 1]); from = at; }
+  }
+  mkdirSync(path.join(dir, "raw/parts"), { recursive: true });
+  const names = [];
+  for (const [n, [a, b]] of parts.entries()) {
+    const file = `raw/parts/part-${String(n).padStart(2, "0")}.mp4`;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        execFileSync("npx", ["remotion", "render", "src/index.ts", "Demo", file, `--frames=${a}-${b}`, "--codec=h264", "--crf=20", "--timeout=60000", ...common], { cwd: dir, stdio: "ignore" });
+        break;
+      } catch (e) {
+        if (attempt >= 4) throw e;
+        console.log(`  토막 ${n} 다시 시도 (${attempt})`);
+      }
+    }
+    console.log(`토막 ${n + 1}/${parts.length} (${a}~${b})`);
+    names.push(`file '${path.join(dir, file)}'`);
+  }
+  writeFileSync(path.join(dir, "raw/parts/list.txt"), names.join("\n"));
+  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", path.join(dir, "raw/parts/list.txt"), "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", path.join(dir, "out/open-receipt-demo.mp4")]);
+  console.log("완성: out/open-receipt-demo.mp4");
+}
