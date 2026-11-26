@@ -45,7 +45,7 @@ import { toCsv, totalAmount, sortByDate, evidenceLabel } from "@/lib/csv";
 import { applyAgentRecord, editField, fallbackSummary, lockedFields, recordValues } from "@/lib/flow";
 import { groupable, mergeGroup, stillValid, toGroupDocs, type GroupProposal } from "@/lib/group";
 import { fitWithin, maskText, type Box } from "@/lib/mask";
-import { ATTACH_LABELS, newAttachmentId, photoKey, slotsOf } from "@/lib/photos";
+import { ATTACH_LABELS, mapPhotos, MAX_PHOTO_CHARS, newAttachmentId, photoKey, slotsOf } from "@/lib/photos";
 import { buildReport, reportPhotos, reportToHtml, won } from "@/lib/report";
 import { ReceiptGallery } from "../receipts";
 import { ReportBody } from "../report-view";
@@ -121,8 +121,39 @@ function readAsDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-/** 사진을 줄이고 가림 상자를 덮은 JPEG를 만든다. 상자가 없으면 줄이기만 한다(원본 보관용). */
-function makeMaskedImage(src: string, boxes: Box[]): Promise<string> {
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error("이미지를 열지 못했습니다. 다른 사진을 선택해 주세요."));
+    img.src = src;
+  });
+}
+/**
+ * 사진이 서버가 받는 크기를 넘으면 넘지 않을 때까지 줄인다 (크기와 화질을 조금씩 낮춘다).
+ * 무늬가 복잡한 사진은 1600px로 줄여도 한도를 넘는데, 그대로 두면 다른 기기와 후원자에게 전달되지 않는다.
+ */
+async function fitPhoto(src: string): Promise<string> {
+  if (src.length <= MAX_PHOTO_CHARS) return src;
+  const img = await loadImage(src);
+  let out = src;
+  for (const [max, quality] of [[1600, 0.72], [1400, 0.66], [1200, 0.6], [1000, 0.55], [800, 0.5], [640, 0.45]] as const) {
+    const { w, h } = fitWithin(img.naturalWidth, img.naturalHeight, max);
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const g = c.getContext("2d")!;
+    g.fillStyle = "#fff";
+    g.fillRect(0, 0, w, h);
+    g.drawImage(img, 0, 0, w, h);
+    out = c.toDataURL("image/jpeg", quality);
+    if (out.length <= MAX_PHOTO_CHARS) break;
+  }
+  return out;
+}
+/** 사진을 줄이고 가림 상자를 덮은 JPEG를 만든다. 상자가 없으면 줄이기만 한다(원본 보관용). 서버가 받는 크기를 넘지 않게 맞춘다. */
+const makeMaskedImage = async (src: string, boxes: Box[]) => fitPhoto(await drawMasked(src, boxes));
+function drawMasked(src: string, boxes: Box[]): Promise<string> {
   return new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => {
@@ -151,6 +182,20 @@ function download(name: string, text: string, type: string) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+/** 원본 보관함을 감싼 것: 서버로 올리려고 꺼낼 때, 너무 큰 원본은 줄여서 건넨다 (줄인 것으로 보관함도 바꾼다). */
+const fittedOriginals: typeof deviceOriginals = {
+  ...deviceOriginals,
+  async get(id) {
+    const have = await deviceOriginals.get(id);
+    if (!have || have.length <= MAX_PHOTO_CHARS) return have;
+    try {
+      const small = await fitPhoto(have);
+      await deviceOriginals.put(id, small);
+      return small;
+    } catch { return have; }
+  },
+};
 
 const md = (d: string) => (d ? `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}` : "날짜 없음");
 
@@ -343,11 +388,18 @@ export default function Home() {
     live.current.busy = true; setSyncing(true);
     try {
       await ledQueue.current; // 방금 바꾼 기록의 서명이 끝난 뒤에 올린다
+      // 예전에 저장된 사진 가운데 서버가 받지 못할 만큼 큰 것은 올리기 전에 줄인다.
+      const oversized = live.current.list.flatMap(slotsOf).filter((s) => (s.image?.length ?? 0) > MAX_PHOTO_CHARS);
+      if (oversized.length) {
+        const fitted = new Map<string, string>();
+        for (const s of oversized) { try { fitted.set(s.key, await fitPhoto(s.image!)); } catch { /* 줄이지 못한 사진은 아래에서 실패로 센다 */ } }
+        persist(live.current.list.map((e) => mapPhotos(e, (img, key) => fitted.get(key) ?? img)));
+      }
       const { list: cur, settings: st, meta: m } = live.current;
       const out = await syncNow(ws, {
         expenses: cur, tombstones: m.tombstones, uploaded: m.uploaded, sharedAt: m.sharedAt, ledger: live.current.led.ledger,
         shared: { org: st.org, projects: st.projects, funder: st.funder, approver: st.approver, sponsorView: st.sponsorView, sponsorNames: st.sponsorNames },
-      }, httpApi(), undefined, deviceOriginals);
+      }, httpApi(), undefined, fittedOriginals);
       if (out.changed) {
         setList(out.expenses); live.current.list = out.expenses;
         saveExpenses(window.localStorage, out.expenses, deviceMasked);
@@ -360,10 +412,12 @@ export default function Home() {
       setLedProblems(out.ledgerProblems);
       keepMeta({ ws, version: out.version, uploaded: out.uploaded, tombstones: out.tombstones, sharedAt: out.sharedAt, syncedAt: out.syncedAt });
       // 자동 동기화는 조용히: 앞서 보인 오류만 지우고, 직접 누른 동기화의 안내는 그대로 둔다.
-      if (out.missingImages) setSyncNote(`동기화했습니다. 영수증 사진 ${out.missingImages}장은 아직 올라오지 않았습니다.`);
+      if (out.failedUploads) { setSyncNote(`동기화했지만 사진 ${out.failedUploads}장을 올리지 못했습니다. 다른 기기와 후원자에게는 이 사진이 보이지 않습니다. 잠시 뒤 다시 동기화해 보고, 계속되면 그 지출의 사진을 다시 올려 주세요.`); }
+      else if (out.missingImages) setSyncNote(`동기화했습니다. 영수증 사진 ${out.missingImages}장은 아직 올라오지 않았습니다.`);
       else if (!quiet) setSyncNote("동기화했습니다.");
       else if (live.current.noteIsError) setSyncNote("");
-      live.current.noteIsError = false;
+      // 사진을 올리지 못한 안내는 다음 자동 동기화에서 풀리면 지워지도록 오류로 표시해 둔다.
+      live.current.noteIsError = out.failedUploads > 0;
     } catch (e: any) {
       live.current.noteIsError = true;
       setSyncNote(e?.message || "동기화하지 못했습니다. 기록은 이 기기에 그대로 있습니다.");

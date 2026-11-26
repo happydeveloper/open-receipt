@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { evidenceLabel } from "@/lib/csv";
 import { recordDigest } from "@/lib/ledger";
 import { memoryBag } from "@/lib/originals";
-import { photoKey, photosOf, slotsOf } from "@/lib/photos";
+import { MAX_PHOTO_CHARS, photoKey, photosOf, slotsOf } from "@/lib/photos";
 import { buildReport, reportPhotos, reportToHtml } from "@/lib/report";
 import { demoSnackExpense, seedExpenses } from "@/lib/seed";
 import type { ViewBundle } from "@/lib/sponsor-view";
@@ -272,5 +272,23 @@ describe("한 거래로 묶기", () => {
     // 남은 사진은 그대로다
     expect((await getImage(store, ws.id, "demo-snack", "img")).status).toBe(200);
     expect((await getImage(store, ws.id, "demo-snack-x-or1", "img")).status).toBe(200);
+  });
+
+  it("서버가 받지 않은 사진은 조용히 넘기지 않고 센다. 줄여서 다시 올리면 풀린다", async () => {
+    const store = new MemoryStore();
+    const ws = newWorkspace();
+    // 서버 한도(암호문 200만 자)를 넘는 사진
+    const huge = "data:image/jpeg;base64," + "H".repeat(1_600_000);
+    expect(huge.length).toBeGreaterThan(MAX_PHOTO_CHARS);
+    const big: Expense = { ...demoSnackExpense(), evidence: { kind: "receipt", image: huge }, updatedAt: "2026-11-20T10:00:00.000Z" };
+    const a = await syncNow(ws, device([big]), api(store), "2026-11-21T00:00:00.000Z");
+    expect(a.failedUploads).toBe(2); // 구성원용 한 번, 후원자용 한 번
+    expect((await getImage(store, ws.id, "demo-snack", "img")).status).toBe(404);
+    // 화면이 사진을 한도 안으로 줄인 뒤에는 올라간다
+    const small: Expense = { ...big, evidence: { kind: "receipt", image: "data:image/jpeg;base64," + "h".repeat(MAX_PHOTO_CHARS - 100) }, updatedAt: "2026-11-21T10:00:00.000Z" };
+    const b = await syncNow(ws, { ...a, expenses: [small] }, api(store), "2026-11-21T10:00:00.000Z");
+    expect(b.failedUploads).toBe(0);
+    expect((await getImage(store, ws.id, "demo-snack", "img")).status).toBe(200);
+    expect((await getImage(store, ws.id, "demo-snack", "view")).status).toBe(200);
   });
 });

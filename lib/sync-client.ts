@@ -45,6 +45,8 @@ export interface SyncResult extends SyncLocal {
   changed: boolean;
   /** 아직 받지 못한 이미지 수 */
   missingImages: number;
+  /** 이번에 올리려다 실패한 사진 수 (너무 크거나 서버가 받지 않음). 다음 동기화 때 다시 시도한다 */
+  failedUploads: number;
 }
 export class SyncError extends Error {}
 
@@ -96,10 +98,12 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
     const uploaded = new Set(local.uploaded);
     let expenses = merged.expenses;
     // 영수증과 함께 묶은 자료(거래명세서 등)를 사진 이름별로 하나씩 다룬다.
+    let failedUploads = 0;
     for (const p of expenses.flatMap(photosOf)) {
       if (uploaded.has(mark(p.key, p.image))) continue;
       const res = await api.putImage(ws.id, p.key, token, { data: await encryptText(ws, p.image) });
       if (res.status === 200) uploaded.add(mark(p.key, p.image));
+      else failedUploads++; // 조용히 넘기지 않고 세어 둔다. 올린 사람에게 알려야 한다.
     }
     let missingImages = 0;
     const fetched = new Map<string, string>();
@@ -122,6 +126,7 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
         if (have && !uploaded.has(`o:${s.key}`)) {
           const res = await api.putImage(ws.id, s.key, token, { data: await encryptText(ws, have) }, "orig");
           if (res.status === 200) uploaded.add(`o:${s.key}`);
+          else failedUploads++;
         } else if (!have) {
           const res = await api.getImage(ws.id, s.key, "orig");
           const img = res.status === 200 ? await decryptText(ws, res.body.data) : null;
@@ -182,6 +187,7 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
         if (uploaded.has(m)) continue;
         const up = await api.putImage(ws.id, key, token, { data: await encryptText(viewer, img) }, "view");
         if (up.status === 200) uploaded.add(m);
+        else failedUploads++;
       }
       // 지운 기록이나 뗀 자료의 사진은 후원자용 자리에서도 지운다.
       for (const m of viewMarks) {
@@ -206,7 +212,7 @@ export async function syncNow(ws: Workspace, local: SyncLocal, api: SyncApi, now
     const sig = (l: Expense[]) => JSON.stringify([...l].sort((a, b) => a.id.localeCompare(b.id)));
     return {
       expenses, tombstones: merged.tombstones, shared, sharedAt, uploaded: [...uploaded], ledger: led.ledger, ledgerProblems: led.problems,
-      version: put.body.version, syncedAt: now, missingImages,
+      version: put.body.version, syncedAt: now, missingImages, failedUploads,
       changed: sig(expenses) !== sig(local.expenses) || JSON.stringify(shared) !== JSON.stringify(local.shared),
     };
   }

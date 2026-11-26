@@ -22,6 +22,12 @@ export const isPhoto = (v?: string): v is string => !!v && v.length > 200;
 /** 사진이 있는 자리인지. 이 기기가 아직 받지 못한 사진(자리표시)도 있는 것으로 센다. */
 export const hasPhoto = (v?: string) => isPhoto(v) || v === "local:image" || v === "sync:image";
 
+/**
+ * 사진 한 장(data URI)의 길이 한도. 서버는 암호화한 사진을 200만 자까지 받는데, 암호화하면 1.33배가 되므로
+ * 그보다 여유를 두고 잡았다. JPEG로는 1MB쯤이다. 화면이 사진을 만들 때 이 길이에 맞춰 줄인다.
+ */
+export const MAX_PHOTO_CHARS = 1_400_000;
+
 export const photoKey = (expenseId: string, attachmentId?: string) => (attachmentId ? `${expenseId}-x-${attachmentId}` : expenseId);
 export const newAttachmentId = () => Math.random().toString(36).slice(2, 8).padEnd(6, "0");
 
