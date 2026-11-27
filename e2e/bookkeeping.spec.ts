@@ -29,7 +29,8 @@ test("장부 일: 환불 기록, 목록에서 찾기, 예산 대비 집행률", 
   await page.locator("#f-pay").click();
   await page.getByRole("option", { name: "조직카드" }).click();
   await page.locator("#f-project").fill("자원봉사자 워크숍");
-  await page.locator("#f-budgetCategory").fill("홍보·인쇄비");
+  await page.getByTestId("cat-chips").getByRole("button", { name: "홍보·인쇄비" }).click(); // 예산 항목은 목록에서 눌러 고른다
+  await expect(page.locator("#f-budgetCategory")).toHaveValue("홍보·인쇄비");
   await page.getByRole("button", { name: "내용 확정" }).click();
   await expect(page.getByTestId("saved-line")).toContainText("인쇄물 반품 · -5,000원");
   await expect(page.getByTestId("saved-line")).toContainText("승인 대기");
@@ -61,9 +62,16 @@ test("장부 일: 환불 기록, 목록에서 찾기, 예산 대비 집행률", 
   const card = page.getByTestId("budget-card");
   await card.getByLabel("홍보·인쇄비 예산 (원)").fill("50000");
   await card.getByLabel("여비·교통비 예산 (원)").fill("10000");
-  await card.getByLabel("예산 항목 추가").fill("회의·행사비");
-  await card.getByRole("button", { name: "추가" }).click();
+  // 기본 예산 항목이 깔려 있다. 없는 항목은 더하고, 쓰지 않는 항목은 뺄 수 있다
+  await expect(card.getByLabel("식비·다과비 예산 (원)")).toBeVisible();
+  await expect(card.getByLabel("기타 예산 (원)")).toBeVisible();
   await card.getByLabel("회의·행사비 예산 (원)").fill("100000");
+  await card.getByLabel("예산 항목 추가").fill("장학금");
+  await card.getByRole("button", { name: "추가", exact: true }).click();
+  await expect(card.getByLabel("장학금 예산 (원)")).toBeVisible();
+  await card.getByRole("button", { name: "장학금 항목 빼기" }).click();
+  await expect(card.getByLabel("장학금 예산 (원)")).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "홍보·인쇄비 항목 빼기" })).toHaveCount(0); // 기록이나 예산에 쓰인 항목은 빼지 못한다
   await page.getByRole("button", { name: "지출 목록으로" }).click();
   await page.getByRole("button", { name: "결산보고서" }).click();
   const table = page.getByTestId("budget-table");

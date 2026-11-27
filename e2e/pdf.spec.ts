@@ -63,7 +63,11 @@ test("PDF 서류: 거래명세서 PDF를 쪽마다 그림으로 바꿔 붙이고
   await expect(page.locator(".maskwrap img")).toBeVisible();
   const first = await page.locator(".maskwrap img").getAttribute("src");
   expect(first).toMatch(/^data:image\/jpeg;base64,/);
+  // PDF의 글자에서 "받는 분 …" 줄을 찾아 가림 상자를 미리 깔아 준다. 사람이 확인하고 더하거나 지운다.
+  await expect(page.locator("main")).toContainText("PDF에서 개인정보로 보이는 곳 1군데를 미리 가렸습니다.");
+  await expect(page.locator("main")).toContainText("가린 상자 1개");
   await page.getByRole("button", { name: "가림 상자 추가" }).click();
+  await expect(page.locator("main")).toContainText("가린 상자 2개");
   await page.getByRole("button", { name: "이 지출에 붙이기" }).click();
   await expect(page.locator("main")).toContainText("거래명세서 1쪽을 붙였습니다. 다음 쪽을 확인해 주세요 (남은 1쪽).");
   await expect(page.getByText("PDF 2쪽 가운데 2쪽입니다.")).toBeVisible();

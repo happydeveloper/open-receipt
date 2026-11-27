@@ -6,12 +6,17 @@
  * 결산보고서)은 모두 사진을 다루므로, PDF를 고르면 여기서 쪽마다 사진으로 바꿔 같은 길을 타게 한다.
  * PDF 파일 자체는 저장하거나 서버로 보내지 않는다. 바꾸는 일은 기기 안에서 끝난다.
  */
+import type { Box } from "./mask";
+import { suggestMaskBoxes, type TextSpot } from "./privacy";
+
 export const PDF_MAX_PAGES = 10;
 export const isPdf = (f: { type: string; name: string }) => f.type === "application/pdf" || /\.pdf$/i.test(f.name);
 
 export interface PdfPages {
   /** 쪽마다 한 장의 JPEG (data URI) */
   pages: string[];
+  /** 쪽마다 미리 제안하는 가림 상자. PDF에 든 글자에서 번호, 수령인, 주소 같은 자리를 찾은 것이다 (lib/privacy.ts). 글자가 없는 스캔본이면 비어 있다 */
+  boxes: Box[][];
   /** PDF의 전체 쪽수. pages보다 크면 앞쪽 일부만 바꾼 것이다 */
   total: number;
 }
@@ -28,6 +33,7 @@ export async function pdfToImages(file: Blob, maxPages = PDF_MAX_PAGES): Promise
     throw new Error(e?.name === "PasswordException" ? "암호가 걸린 PDF는 열 수 없습니다. 암호를 푼 파일이나 화면을 캡처한 그림을 올려 주세요." : "PDF를 열지 못했습니다. 파일이 깨졌거나 PDF가 아닐 수 있습니다.");
   }
   const pages: string[] = [];
+  const boxes: Box[][] = [];
   for (let n = 1; n <= Math.min(doc.numPages, maxPages); n++) {
     const page = await doc.getPage(n);
     const base = page.getViewport({ scale: 1 });
@@ -40,8 +46,25 @@ export async function pdfToImages(file: Blob, maxPages = PDF_MAX_PAGES): Promise
     g.fillRect(0, 0, canvas.width, canvas.height);
     await page.render({ canvas, canvasContext: g, viewport }).promise;
     pages.push(canvas.toDataURL("image/jpeg", 0.9));
+    // 글자 자리를 읽어 가릴 곳을 제안한다. 읽지 못해도 그림은 그대로 쓴다.
+    try {
+      const text = await page.getTextContent();
+      const spots: TextSpot[] = [];
+      for (const it of text.items as any[]) {
+        if (typeof it?.str !== "string" || !it.str.trim() || !Array.isArray(it.transform)) continue;
+        const [x0, y0] = [it.transform[4], it.transform[5]];
+        const h = it.height || Math.hypot(it.transform[2], it.transform[3]);
+        // 글자의 기준선 아래로 내려오는 획까지 덮도록 아래쪽에 조금 여유를 둔다. PDF 좌표는 아래가 원점이다.
+        const [ax, ay] = viewport.convertToViewportPoint(x0, y0 - h * 0.25);
+        const [bx, by] = viewport.convertToViewportPoint(x0 + it.width, y0 + h);
+        spots.push({ text: it.str, x: Math.min(ax, bx) / viewport.width, y: Math.min(ay, by) / viewport.height, w: Math.abs(bx - ax) / viewport.width, h: Math.abs(by - ay) / viewport.height });
+      }
+      boxes.push(suggestMaskBoxes(spots));
+    } catch {
+      boxes.push([]);
+    }
   }
   const total = doc.numPages;
   await doc.loadingTask.destroy();
-  return { pages, total };
+  return { pages, boxes, total };
 }

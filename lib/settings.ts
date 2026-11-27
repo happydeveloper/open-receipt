@@ -3,6 +3,7 @@
  * 기기 설정(단체 이름, 내 이름과 역할, 사업 목록)과 백업 파일.
  * 설정은 브라우저의 localStorage에 둔다. 읽을 때 항상 normalizeSettings로 다듬어 깨진 값을 걸러 낸다.
  */
+import { DEFAULT_CATEGORIES, normalizeCategories } from "./categories";
 import { normalizeClosings, type Closings } from "./closing";
 import type { KV } from "./storage";
 
@@ -32,6 +33,8 @@ export interface Settings {
   budgets: Budgets;
   /** 마감한 사업: 사업 이름 → 누가 언제 마감했는지 (단체 공간에서 함께 쓰는 설정). lib/closing.ts */
   closed: Closings;
+  /** 단체가 쓰는 예산 항목 목록 (단체 공간에서 함께 쓰는 설정). 정한 적이 없으면 기본 항목. lib/categories.ts */
+  categories: string[];
 }
 export type Budgets = Record<string, Record<string, number>>;
 /** 무엇이 들어오든 예산 모양으로 다듬는다. 0 이하나 숫자가 아닌 값은 뺀다. */
@@ -56,8 +59,8 @@ export function setBudget(s: Settings, project: string, category: string, amount
   else delete row[category];
   return { ...s, budgets: normalizeBudgets({ ...s.budgets, [project]: row }) };
 }
-export const EMPTY_SETTINGS: Settings = { org: "", submitter: "", approver: "", projects: [], funder: "", onboarded: false, role: "submitter", sponsorView: false, sponsorNames: false, submitterApproves: false, budgets: {}, closed: {} };
-export const DEMO_SETTINGS: Settings = { org: "다온 나눔모임 (가상)", submitter: "김○○", approver: "박○○", projects: ["자원봉사자 워크숍"], funder: "", onboarded: true, role: "submitter", sponsorView: false, sponsorNames: false, submitterApproves: false, budgets: {}, closed: {} };
+export const EMPTY_SETTINGS: Settings = { org: "", submitter: "", approver: "", projects: [], funder: "", onboarded: false, role: "submitter", sponsorView: false, sponsorNames: false, submitterApproves: false, budgets: {}, closed: {}, categories: [...DEFAULT_CATEGORIES] };
+export const DEMO_SETTINGS: Settings = { org: "다온 나눔모임 (가상)", submitter: "김○○", approver: "박○○", projects: ["자원봉사자 워크숍"], funder: "", onboarded: true, role: "submitter", sponsorView: false, sponsorNames: false, submitterApproves: false, budgets: {}, closed: {}, categories: [...DEFAULT_CATEGORIES] };
 
 const str = (v: unknown, max = 60) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
@@ -65,7 +68,7 @@ const str = (v: unknown, max = 60) => (typeof v === "string" ? v.trim().slice(0,
 export function normalizeSettings(raw: unknown): Settings {
   const r = (raw && typeof raw === "object" ? raw : {}) as any;
   const projects = Array.isArray(r.projects) ? [...new Set(r.projects.map((p: unknown) => str(p)).filter(Boolean))].slice(0, 30) : [];
-  return { org: str(r.org), submitter: str(r.submitter, 30), approver: str(r.approver, 30), projects: projects as string[], funder: str(r.funder), onboarded: r.onboarded === true, role: r.role === "approver" ? "approver" : "submitter", sponsorView: r.sponsorView === true, sponsorNames: r.sponsorNames === true, submitterApproves: r.submitterApproves === true, budgets: normalizeBudgets(r.budgets), closed: normalizeClosings(r.closed) };
+  return { org: str(r.org), submitter: str(r.submitter, 30), approver: str(r.approver, 30), projects: projects as string[], funder: str(r.funder), onboarded: r.onboarded === true, role: r.role === "approver" ? "approver" : "submitter", sponsorView: r.sponsorView === true, sponsorNames: r.sponsorNames === true, submitterApproves: r.submitterApproves === true, budgets: normalizeBudgets(r.budgets), closed: normalizeClosings(r.closed), categories: normalizeCategories(r.categories) };
 }
 export function loadSettings(kv: KV): Settings {
   try {

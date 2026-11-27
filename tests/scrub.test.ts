@@ -56,3 +56,13 @@ describe("오류 보고에서 민감한 것 지우기", () => {
     expect(scrubCrumb({ category: "ui.click", message: 'button[aria-label="현수막 끈 9,000원"]' })).toEqual({ category: "ui.click", message: "" });
   });
 });
+
+import { isStaleChunk } from "@/app/error-screen";
+describe("새 버전 배포 뒤의 조각 오류", () => {
+  it("화면 조각을 받아 오지 못한 오류만 골라낸다 (이때는 알아서 한 번 새로 고친다)", () => {
+    expect(isStaleChunk({ name: "ChunkLoadError", message: "Loading chunk app/app/page failed." })).toBe(true);
+    expect(isStaleChunk({ name: "TypeError", message: "Failed to fetch dynamically imported module: https://x/_next/a.js" })).toBe(true);
+    expect(isStaleChunk({ name: "Error", message: "열린영수증 오류 화면 시험 (일부러 낸 오류)" })).toBe(false);
+    expect(isStaleChunk({ name: "TypeError", message: "Cannot read properties of undefined" })).toBe(false);
+  });
+});

@@ -52,6 +52,7 @@ import { buildReport, reportPhotos, reportToHtml, won } from "@/lib/report";
 import { ReceiptGallery } from "../receipts";
 import { ReportBody } from "../report-view";
 import { DEMO_PROJECT } from "@/lib/seed";
+import { addCategory, categoryChoices, normalizeCategories, removeCategory } from "@/lib/categories";
 import { changedAfterClose, closedBy, closeBlock, closeProject, closingOf, guardClosed, isClosed, normalizeClosings, reopenProject, unfinished } from "@/lib/closing";
 import { addProject, BACKUP_KEY, backupAdvice, DEMO_SETTINGS, EMPTY_SETTINGS, loadSettings, makeBackup, missingForStart, normalizeBudgets, parseBackup, saveSettings, setBudget, SETTINGS_KEY, type Settings } from "@/lib/settings";
 import { filterExpenses, isFiltering, NO_FILTER, type ListFilter } from "@/lib/search";
@@ -292,7 +293,6 @@ export default function Home() {
   const [filter, setFilter] = useState<ListFilter>(NO_FILTER);
   // 설정의 예산 칸: 새 예산 항목 이름
   const [newBudgetCat, setNewBudgetCat] = useState("");
-  const [extraCats, setExtraCats] = useState<string[]>([]);
   // 단체 공간 (기기 간 공유)
   const [meta, setMeta] = useState<SyncMeta>(EMPTY_META);
   const [syncing, setSyncing] = useState(false);
@@ -357,6 +357,10 @@ export default function Home() {
   // 지출에 함께 묶을 자료의 종류 (attach 단계)
   const [attLabel, setAttLabel] = useState(ATTACH_LABELS[0]);
   const [boxes, setBoxes] = useState<Box[]>([]);
+  // PDF 쪽마다 미리 제안된 가림 상자 (쪽 그림 → 상자). 그 쪽을 화면에 올릴 때 상자로 깔아 준다.
+  const pdfBoxes = useRef(new Map<string, Box[]>());
+  const autoBoxes = (page: string | null | undefined): Box[] => (page ? pdfBoxes.current.get(page) ?? [] : []);
+  const keepPdfBoxes = (pages: string[], all: Box[][]) => pages.forEach((pg, i) => pdfBoxes.current.set(pg, all[i] ?? []));
   const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
   // 지출 에이전트
@@ -432,7 +436,7 @@ export default function Home() {
       const { list: cur, settings: st, meta: m } = live.current;
       const out = await syncNow(ws, {
         expenses: cur, tombstones: m.tombstones, uploaded: m.uploaded, sharedAt: m.sharedAt, ledger: live.current.led.ledger, version: m.version,
-        shared: { org: st.org, projects: st.projects, funder: st.funder, approver: st.approver, sponsorView: st.sponsorView, sponsorNames: st.sponsorNames, submitterApproves: st.submitterApproves, budgets: st.budgets, closed: st.closed },
+        shared: { org: st.org, projects: st.projects, funder: st.funder, approver: st.approver, sponsorView: st.sponsorView, sponsorNames: st.sponsorNames, submitterApproves: st.submitterApproves, budgets: st.budgets, closed: st.closed, categories: st.categories },
       }, httpApi(), undefined, fittedOriginals);
       if (out.changed) {
         // 다른 사람이 올린 기록이나 승인이 들어왔으면 알린다. 조용히 도는 자동 동기화에서도 알린다.
@@ -448,7 +452,7 @@ export default function Home() {
         }
         setList(out.expenses); live.current.list = out.expenses;
         saveExpenses(window.localStorage, out.expenses, deviceMasked);
-        const nextSt: Settings = { ...live.current.settings, ...out.shared, sponsorView: out.shared.sponsorView === true, sponsorNames: out.shared.sponsorNames === true, submitterApproves: out.shared.submitterApproves === true, budgets: normalizeBudgets(out.shared.budgets), closed: normalizeClosings(out.shared.closed), onboarded: true };
+        const nextSt: Settings = { ...live.current.settings, ...out.shared, sponsorView: out.shared.sponsorView === true, sponsorNames: out.shared.sponsorNames === true, submitterApproves: out.shared.submitterApproves === true, budgets: normalizeBudgets(out.shared.budgets), closed: normalizeClosings(out.shared.closed), categories: out.shared.categories ? normalizeCategories(out.shared.categories) : live.current.settings.categories, onboarded: true };
         setSettings(nextSt); live.current.settings = nextSt; saveSettings(window.localStorage, nextSt);
         if (!out.shared.projects.includes(project) && out.shared.projects[0]) setProject(out.shared.projects[0]);
       }
@@ -520,7 +524,7 @@ export default function Home() {
   const APPROVER = (meta.ws || settings.role === "approver" ? settings.submitter : settings.approver) || settings.submitter || "승인자";
   const keep = (next: Settings) => {
     const prev = live.current.settings;
-    const sharedChanged = prev.org !== next.org || prev.funder !== next.funder || prev.approver !== next.approver || prev.projects.join("|") !== next.projects.join("|") || prev.sponsorView !== next.sponsorView || prev.sponsorNames !== next.sponsorNames || prev.submitterApproves !== next.submitterApproves || JSON.stringify(prev.budgets) !== JSON.stringify(next.budgets) || JSON.stringify(prev.closed) !== JSON.stringify(next.closed);
+    const sharedChanged = prev.org !== next.org || prev.funder !== next.funder || prev.approver !== next.approver || prev.projects.join("|") !== next.projects.join("|") || prev.sponsorView !== next.sponsorView || prev.sponsorNames !== next.sponsorNames || prev.submitterApproves !== next.submitterApproves || JSON.stringify(prev.budgets) !== JSON.stringify(next.budgets) || JSON.stringify(prev.closed) !== JSON.stringify(next.closed) || prev.categories.join("|") !== next.categories.join("|");
     setSettings(next); live.current.settings = next; saveSettings(window.localStorage, next);
     if (sharedChanged && live.current.meta.ws) keepMeta({ ...live.current.meta, sharedAt: stampNow() });
   };
@@ -543,7 +547,9 @@ export default function Home() {
   const attention = useMemo(() => needsAttention(mine), [mine]);
   const shown = useMemo(() => filterExpenses(mine, filter), [mine, filter]);
   // 예산을 적을 항목: 이 사업의 기록에 쓰인 예산 항목, 이미 예산을 정한 항목, 방금 추가한 항목
-  const budgetCats = useMemo(() => [...new Set([...mine.map((e) => e.budgetCategory).filter(Boolean), ...Object.keys(settings.budgets[project] ?? {}), ...extraCats])], [mine, settings.budgets, project, extraCats]);
+  const budgetCats = useMemo(() => categoryChoices(settings.categories, [...mine.map((e) => e.budgetCategory), ...Object.keys(settings.budgets[project] ?? {})]), [mine, settings.budgets, settings.categories, project]);
+  // 고르거나 에이전트에 알려 줄 예산 항목: 단체의 목록에, 어느 사업에서든 이미 쓰인 항목을 더한 것
+  const allCats = useMemo(() => categoryChoices(settings.categories, list.map((e) => e.budgetCategory)), [settings.categories, list]);
   // 같은 영수증은 다른 사업 이름으로 올라올 수도 있어 전체 기록에서 찾는다.
   const dupIds = useMemo(() => duplicateIds(list), [list]);
   // 단체가 정한 승인 방식
@@ -587,7 +593,7 @@ export default function Home() {
   function attachRestOfPdf(e: Expense) {
     const [next, ...rest] = morePages;
     if (!next) return;
-    setCur(e); setEditing(true); setRaw(next); setMorePages(rest); setBoxes([]); setErr(""); setAttLabel(ATTACH_LABELS[0]);
+    setCur(e); setEditing(true); setRaw(next); setMorePages(rest); setBoxes(autoBoxes(next)); setErr(""); setAttLabel(ATTACH_LABELS[0]);
     setPdfPage((p) => (p ? { ...p, no: p.no + 1 } : p));
     setStep("attach"); go("add");
   }
@@ -609,7 +615,7 @@ export default function Home() {
       // PDF의 다음 쪽이 남아 있으면 이어서 보여 준다. 쪽마다 가릴 곳이 다르므로 한 쪽씩 확인한다.
       if (morePages.length) {
         const [next, ...rest] = morePages;
-        setRaw(next); setMorePages(rest); setPdfPage((p) => (p ? { ...p, no: p.no + 1 } : p));
+        setRaw(next); setBoxes(autoBoxes(next)); setMorePages(rest); setPdfPage((p) => (p ? { ...p, no: p.no + 1 } : p));
         setToast(`${label}을 붙였습니다. 다음 쪽을 확인해 주세요 (남은 ${morePages.length}쪽).`); window.scrollTo(0, 0);
         return;
       }
@@ -630,10 +636,12 @@ export default function Home() {
     if (isPdf(file)) {
       // PDF는 쪽마다 그림으로 바꾼다. 첫 쪽부터 보여 주고, 나머지는 차례로 이어서 붙인다.
       try {
-        const { pages, total } = await pdfToImages(file);
+        const { pages, boxes: found, total } = await pdfToImages(file);
         if (!pages.length) throw new Error("PDF에 쪽이 없습니다.");
-        setRaw(pages[0]); setMorePages(pages.slice(1)); setPdfPage({ no: 1, total: pages.length }); setBoxes([]);
+        keepPdfBoxes(pages, found);
+        setRaw(pages[0]); setMorePages(pages.slice(1)); setPdfPage({ no: 1, total: pages.length }); setBoxes(found[0] ?? []);
         setErr(total > pages.length ? `PDF가 ${total}쪽이라 앞의 ${PDF_MAX_PAGES}쪽만 올립니다.` : "");
+        if (found[0]?.length) setToast(`PDF에서 개인정보로 보이는 곳 ${found[0].length}군데를 미리 가렸습니다. 맞는지 확인하고, 필요 없는 상자는 "되돌리기"로 지워 주세요.`);
       } catch (e: any) { setErr(e.message); }
       return;
     }
@@ -682,7 +690,7 @@ export default function Home() {
         locked: lockedFields(base),
         aiFields: base.aiDrafted.filter((f) => f !== "summary"),
         evidence: { kind: base.evidence.kind, hasImage: !!base.evidence.image, hasReason: !!(base.evidence.reason ?? "").trim() },
-        history: history(),
+        history: history(), categories: allCats,
         sources: prev.sources ?? [], searches: prev.searches ?? 0, asks: prev.asks ?? 0,
       });
       const context = [{ description: "단체 이름", value: settings.org }, { description: "지원기관", value: settings.funder }, { description: "지금 화면에서 보고 있는 사업·행사 (지출 날짜와 맞으면 project로 쓸 수 있음)", value: project }].filter((c) => c.value);
@@ -919,10 +927,11 @@ export default function Home() {
     for (const f of usable) {
       try {
         // PDF는 쪽마다 한 장으로 센다. 같은 서류의 쪽들은 올린 뒤 묶음 에이전트가 한 건으로 합치자고 제안한다.
-        const shots = isPdf(f) ? (await pdfToImages(f)).pages.map((raw, i, all) => ({ name: all.length > 1 ? `${f.name} ${i + 1}쪽` : f.name, raw })) : [{ name: f.name, raw: await readAsDataUrl(f) }];
+        const pdf = isPdf(f) ? await pdfToImages(f) : null;
+        const shots: { name: string; raw: string; boxes?: Box[] }[] = pdf ? pdf.pages.map((raw, i, all) => ({ name: all.length > 1 ? `${f.name} ${i + 1}쪽` : f.name, raw, boxes: pdf.boxes[i] })) : [{ name: f.name, raw: await readAsDataUrl(f) }];
         for (const s of shots) {
           if (added.length >= room) { skipped++; continue; }
-          added.push({ id: crypto.randomUUID(), name: s.name, raw: s.raw, boxes: [], state: "ready", note: "" });
+          added.push({ id: crypto.randomUUID(), name: s.name, raw: s.raw, boxes: s.boxes ?? [], state: "ready", note: "" }); // PDF는 미리 제안된 가림 상자를 깔아 둔다
         }
       } catch { skipped++; /* 읽지 못한 파일은 건너뛴다 */ }
     }
@@ -945,6 +954,7 @@ export default function Home() {
         record: recordValues(base), locked: lockedFields(base), aiFields: [],
         evidence: { kind: "receipt", hasImage: true, hasReason: false },
         history: live.current.list.map((e) => ({ project: e.project, item: e.item, budgetCategory: e.budgetCategory, paymentMethod: e.paymentMethod ?? "", amount: e.amount, date: e.date })),
+        categories: categoryChoices(live.current.settings.categories, live.current.list.map((e) => e.budgetCategory)),
         sources: [], searches: 0, asks: 0,
       });
       const context = [{ description: "단체 이름", value: settings.org }, { description: "지원기관", value: settings.funder }].filter((c) => c.value);
@@ -1246,14 +1256,21 @@ export default function Home() {
         <Card data-testid="budget-card">
           <VStack gap={2}>
             <Heading level={3}>예산 · {project}</Heading>
-            <Note>예산 항목마다 배정한 금액을 적어 두면, 결산보고서에서 쓴 돈과 견줘 집행률과 남은 금액을 보여 줍니다. 비워 두면 예산 없이 쓴 금액만 보입니다.</Note>
-            {budgetCats.map((cat) => (
-              <TextInput key={cat} id={`budget-${cat}`} label={`${cat} 예산 (원)`} inputMode="numeric" value={settings.budgets[project]?.[cat] ? String(settings.budgets[project][cat]) : ""} placeholder="예: 200000"
-                onChange={(v) => { const d = v.replace(/[^\d]/g, ""); keep(setBudget(settings, project, cat, d === "" ? null : Number(d))); }} />
-            ))}
+            <Note>예산 항목마다 배정한 금액을 적어 두면, 결산보고서에서 쓴 돈과 견줘 집행률과 남은 금액을 보여 줍니다. 비워 두면 예산 없이 쓴 금액만 보입니다. 여기 있는 항목은 지출을 기록할 때 고를 수 있고, 에이전트도 이 가운데에서 골라 채웁니다.</Note>
+            {budgetCats.map((cat) => {
+              // 기록에도 예산에도 쓰이지 않은 항목은 목록에서 뺄 수 있다.
+              const inUse = list.some((e) => e.budgetCategory === cat) || Object.values(settings.budgets).some((b) => b?.[cat]);
+              return (
+                <HStack key={cat} gap={2} align="end">
+                  <VStack className="grow"><TextInput id={`budget-${cat}`} label={`${cat} 예산 (원)`} inputMode="numeric" value={settings.budgets[project]?.[cat] ? String(settings.budgets[project][cat]) : ""} placeholder="예: 200000"
+                    onChange={(v) => { const d = v.replace(/[^\d]/g, ""); keep(setBudget(settings, project, cat, d === "" ? null : Number(d))); }} /></VStack>
+                  {!inUse && settings.categories.includes(cat) ? <Button label="빼기" variant="ghost" aria-label={`${cat} 항목 빼기`} onClick={() => keep({ ...settings, categories: removeCategory(settings.categories, cat) })} /> : null}
+                </HStack>
+              );
+            })}
             <HStack gap={2} align="end">
-              <VStack width="100%"><TextInput id="budget-new" label="예산 항목 추가" value={newBudgetCat} placeholder="예: 회의·행사비" onChange={setNewBudgetCat} /></VStack>
-              <Button label="추가" isDisabled={!newBudgetCat.trim() || budgetCats.includes(newBudgetCat.trim())} onClick={() => { setExtraCats((c) => [...c, newBudgetCat.trim()]); setNewBudgetCat(""); }} />
+              <VStack className="grow"><TextInput id="budget-new" label="예산 항목 추가" value={newBudgetCat} placeholder="예: 장학금" onChange={setNewBudgetCat} /></VStack>
+              <Button label="추가" isDisabled={!newBudgetCat.trim() || budgetCats.includes(newBudgetCat.trim())} onClick={() => { keep({ ...settings, categories: addCategory(settings.categories, newBudgetCat) }); setNewBudgetCat(""); }} />
             </HStack>
           </VStack>
         </Card>
@@ -1671,6 +1688,12 @@ export default function Home() {
   const text = (k: "date" | "merchant" | "item" | "purpose" | "project" | "budgetCategory" | "payer", label: string, placeholder = "", id = `f-${k}`) => (
     <TextInput id={id} label={label} value={cur[k]} placeholder={placeholder} description={ai(k)} onChange={(v) => set(k, v)} />
   );
+  /** 예산 항목을 눌러서 고르는 단추들. 단체의 목록에서 끌어다 쓴다. 목록에 없는 이름은 위 칸에 직접 적는다. */
+  const catChips = (
+    <HStack gap={1} wrap="wrap" data-testid="cat-chips">
+      {allCats.map((c) => <Button key={c} label={c} size="sm" variant={cur.budgetCategory === c ? "primary" : "secondary"} onClick={() => set("budgetCategory", cur.budgetCategory === c ? "" : c)} />)}
+    </HStack>
+  );
   const dateField = (
     <DateInput id="f-date" label="일자" placeholder="날짜 선택" value={/^\d{4}-\d{2}-\d{2}$/.test(cur.date) ? (cur.date as any) : undefined} description={ai("date")}
       onChange={(v) => set("date", v ?? "")} />
@@ -1710,7 +1733,7 @@ export default function Home() {
     );
     if (f === "reimbursement" || f === "payer") return reimbField;
     if (f === "purpose") return <TextInput id="q-purpose" label="목적" isLabelHidden value={cur.purpose} placeholder="예: 워크숍 다과 구매" onChange={(v) => set("purpose", v)} />;
-    if (f === "budgetCategory") return <TextInput id="q-budget" label="예산 항목" isLabelHidden value={cur.budgetCategory} placeholder="예: 회의·행사비" onChange={(v) => set("budgetCategory", v)} />;
+    if (f === "budgetCategory") return <VStack gap={2}><TextInput id="q-budget" label="예산 항목" isLabelHidden value={cur.budgetCategory} placeholder="아래에서 고르거나 직접 적으세요" onChange={(v) => set("budgetCategory", v)} />{catChips}</VStack>;
     if (f === "amount") return amountField;
     if (f === "paymentMethod") return payField;
     if (f === "date") return dateField;
@@ -1784,7 +1807,7 @@ export default function Home() {
 
       {step === "mask" && raw ? <>
         {maskPad}
-        <Note>이름·카드번호 위를 끌어서 가려 주세요. 가린 상자 {boxes.length}개. 메모 속 카드번호·전화번호는 자동으로 가려집니다.</Note>
+        <Note>이름·카드번호·전화번호 위를 끌어서 가려 주세요. 가린 상자 {boxes.length}개. AI에는 가린 사진만 갑니다. 사진 속 글자는 자동으로 가리지 못하니 직접 확인해 주세요(PDF는 가릴 곳을 미리 제안합니다). 메모와 기록에 적은 이름·번호는 AI에 보낼 때 자동으로 지웁니다.</Note>
         <Note>AI에는 가린 사진만 보냅니다. 원본은 이 기기에 보관하고, 단체 공간을 쓰면 암호화해 등록자와 승인자만 볼 수 있습니다. 후원자에게는 가린 사진만 보입니다.</Note>
         <VStack className="grow" />
         <Main label="에이전트에게 맡기기" onClick={startAgent} />
@@ -1856,7 +1879,8 @@ export default function Home() {
         {payField}
         {text("project", "사업·행사", DEMO_PROJECT)}
         {text("purpose", "목적", "무엇을 위해 썼나요?")}
-        {text("budgetCategory", "예산 항목", "예: 회의·행사비")}
+        {text("budgetCategory", "예산 항목", "아래에서 고르거나 직접 적으세요")}
+        {catChips}
         <Card><VStack gap={3}><Heading level={3}>누가 결제했고, 환급이 필요한가요?</Heading>{reimbField}</VStack></Card>
         <TextArea id="f-summary-edit" label="한 줄 요약" description="비워 두면 자동으로 작성합니다." value={cur.summary} onChange={(v) => set("summary", v)} />
         {dupBanner(cur)}

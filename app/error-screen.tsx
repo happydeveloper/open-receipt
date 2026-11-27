@@ -14,13 +14,31 @@ import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
 import { hasReporter, reportError } from "@/lib/error-hook";
 import { rescueBackup } from "@/lib/rescue";
+import { scrubText } from "@/lib/scrub";
 import { STORAGE_KEY } from "@/lib/storage";
+
+const RELOAD_KEY = "open-receipt:reloaded-at";
+/** 화면 조각(스크립트 파일)을 받아 오지 못해 난 오류인지. */
+export const isStaleChunk = (error: { name?: string; message?: string }): boolean =>
+  error?.name === "ChunkLoadError" || /Loading chunk .* failed|Loading CSS chunk|Failed to fetch dynamically imported module|Importing a module script failed/i.test(error?.message ?? "");
 
 export function ErrorScreen({ error, reset, where }: { error: Error & { digest?: string }; reset: () => void; where: string }) {
   const [note, setNote] = useState("");
   const [hasData, setHasData] = useState(false);
   const [reported, setReported] = useState(false);
   useEffect(() => {
+    // 화면 조각을 받아 오지 못한 경우: 새 버전이 배포된 뒤 예전 탭이 없어진 파일을 찾을 때 생긴다.
+    // 고장이 아니라 새로 고치면 풀리는 일이므로, 한 번은 알아서 새로 고친다 (되풀이하지 않게 표시해 둔다).
+    if (isStaleChunk(error)) {
+      try {
+        const last = Number(window.sessionStorage.getItem(RELOAD_KEY)) || 0;
+        if (Date.now() - last > 30_000) {
+          window.sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
+          window.location.reload();
+          return;
+        }
+      } catch { /* 표시를 남기지 못하면 새로 고치지 않고 오류 화면을 보여 준다 */ }
+    }
     reportError(error, where);
     setReported(hasReporter());
   }, [error, where]);
@@ -43,7 +61,7 @@ export function ErrorScreen({ error, reset, where }: { error: Error & { digest?:
   }
 
   return (
-    <VStack as="main" className="app" gap={4} padding={4} maxWidth={480} data-testid="error-screen">
+    <VStack as="main" className="app" gap={4} padding={4} maxWidth={480} data-testid="error-screen" data-error={scrubText(`${error.name}: ${error.message}`, 200)}>
       <VStack gap={2}>
         <Heading level={1}>화면을 여는 중 문제가 생겼습니다</Heading>
         <Text>불편을 드려 죄송합니다. 다시 시도하면 대부분 열립니다.</Text>

@@ -10,7 +10,9 @@ import { normalizeAmount } from "./draft";
 import { cleanProposals, DOC_TYPES, normalizeDocType, type GroupDoc, type GroupProposal } from "./group";
 import { softenJudgment } from "./guard";
 import { toSources } from "./guidelines";
+import { matchCategory, normalizeCategories } from "./categories";
 import { maskText } from "./mask";
+import { createVault, hideMessages, type Vault } from "./privacy";
 import { evidenceMissing, missingFields, newExpense, openItems, withStatus } from "./status";
 import { PAYMENT_LABEL, STATUS_LABEL, type ChecklistItem, type Expense, type PaymentMethod, type Source } from "./types";
 
@@ -42,6 +44,8 @@ export interface ExpenseRunInput {
   locked?: string[];
   evidence: { kind: "receipt" | "alternative" | "none"; hasImage: boolean; hasReason: boolean };
   history?: HistoryItem[];
+  /** 단체가 쓰는 예산 항목 목록. 주어지면 예산 항목을 이 가운데에서만 고른다 (lib/categories.ts) */
+  categories?: string[];
   sources?: Source[];
   searches?: number;
   asks?: number;
@@ -119,10 +123,16 @@ async function runLoop(opts: {
   deps: LinerDeps;
   hooks?: LoopHooks;
   maxTurns?: number;
+  /** 개인정보 자리표. 모델로 나가는 글의 이름과 번호를 바꾸고, 돌아온 답에서 되돌린다 (lib/privacy.ts) */
+  vault?: Vault;
 }): Promise<unknown | null> {
+  const vault = opts.vault ?? createVault();
   const specs = opts.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
   for (let turn = 0; turn < (opts.maxTurns ?? MAX_TURNS); turn++) {
-    const m = await chatWithTools({ messages: [{ role: "system", content: opts.system }, ...opts.messages], tools: specs }, opts.deps);
+    // 보내기 직전에 이름과 번호를 자리표로 바꾼다. 대화 기록(opts.messages)과 화면에는 원래 값이 남는다.
+    const sent = await chatWithTools({ messages: [{ role: "system", content: opts.system }, ...hideMessages(vault, opts.messages)], tools: specs }, opts.deps);
+    // 받은 답의 자리표를 원래 값으로 되돌린다. 이 아래로는 모두 원래 값을 다룬다.
+    const m = { ...sent, content: sent.content == null ? sent.content : vault.show(sent.content), toolCalls: sent.toolCalls.map((c) => ({ ...c, function: { ...c.function, arguments: vault.show(c.function.arguments) } })) };
     // 도구 없이 말만 했으면 도구를 쓰라고 한 번 더 알려 준다.
     if (m.toolCalls.length === 0) {
       opts.messages.push({ role: "assistant", content: m.content ?? "" });
@@ -158,13 +168,14 @@ async function runLoop(opts: {
 }
 
 /** 공개 지침 검색 도구. 두 에이전트가 함께 쓴다. 찾은 출처는 state.sources에 쌓인다. */
-function searchTool(state: { sources: Source[]; searches: number }, deps: LinerDeps): Tool {
+function searchTool(state: { sources: Source[]; searches: number }, deps: LinerDeps, vault: Vault): Tool {
   return {
     name: "search_guidelines",
     description: "Liner Search로 공개된 정산·증빙 지침을 검색한다. 결과가 이 지출과 관련 없으면 검색어를 바꿔 다시 부를 수 있다 (최대 3회).",
     parameters: { type: "object", properties: { query: { type: "string", description: "한국어 검색어. 지출 종류, 결제 방식, '정산 증빙 지침' 같은 말을 조합" } }, required: ["query"] },
     async run(args) {
-      const query = String(args.query ?? "").trim().slice(0, 120);
+      // 검색어는 바깥 검색으로 나간다. 이름과 번호는 자리표도 남기지 않고 뺀다.
+      const query = vault.strip(String(args.query ?? "")).slice(0, 120);
       if (!query) return { result: { error: "검색어가 비어 있습니다." } };
       if (state.searches >= MAX_SEARCHES) return { result: { error: "검색 횟수를 다 썼습니다. 지금까지의 결과로 마무리하세요." } };
       state.searches++;
@@ -200,7 +211,7 @@ export const EXPENSE_SYSTEM = `당신은 소규모 비영리단체·동아리의
 
 일하는 방식:
 1. 가장 먼저, 영수증 이미지와 메모에 보이는 값(일자, 합계 금액, 가맹점, 결제 방식, 항목)을 update_record로 옮깁니다. 보이지 않는 값은 넣지 않습니다. item은 품목 나열이 아니라 "행사 다과"처럼 2~4단어의 지출 이름으로 씁니다. 이미지가 있으면 어떤 서류인지도 docType에 적습니다 (카드영수증, 간이영수증, 거래명세서, 주문내역(쇼핑몰 주문 화면 캡처), 이체확인증, 견적서, 기타).
-2. lookup_history로 이 단체의 지난 기록을 확인합니다. 지난 기록의 사업·행사가 하나뿐이고 이번 지출 날짜와 맞으면 project를, 비슷한 지출이 있으면 budgetCategory를 채웁니다.
+2. lookup_history로 이 단체의 지난 기록을 확인합니다. 지난 기록의 사업·행사가 하나뿐이고 이번 지출 날짜와 맞으면 project를 채웁니다. budgetCategory는 결과의 allowedBudgetCategories(이 단체의 예산 항목 목록) 가운데 이 지출에 가장 가까운 것으로 채웁니다. 비슷한 지난 지출이 있으면 그 항목을 따릅니다. 목록에 없는 이름을 새로 만들지 않습니다(목록이 없을 때만 알맞은 이름을 씁니다).
 3. check_bundle로 무엇이 빠졌는지 확인합니다.
 4. 스스로 알 수 없는 것만 ask_user로 묻습니다. 목적, 결제자, 환급 여부는 추측하지 말고 물으세요. 한 번에 최대 3개, 친근한 한국어로.
 5. 필수 정보가 갖춰지면 search_guidelines로 이 지출과 관련된 공개 정산·증빙 지침을 찾습니다. 지출 종류(예: 다과비·회의비), 결제 방식(예: 개인카드 선결제 환급, 현금), 지원기관을 넣어 구체적으로 검색합니다. 결과가 일반론뿐이거나 관련이 없으면 검색어를 바꿔 다시 찾습니다. 예: "보조금 회의비 다과비 증빙서류 참석자 명단", "지출결의서 영수증 첨부 개인카드 사용 환급 지침".
@@ -293,6 +304,11 @@ export async function runExpenseAgent(input: ExpenseRunInput, deps: LinerDeps = 
   const locked = new Set((input.locked ?? []).filter((f) => (RECORD_FIELDS as readonly string[]).includes(f)));
   const aiFields = new Set<string>();
   const state = { sources: toSources(input.sources ?? []), searches: Number(input.searches) || 0, asks: Number(input.asks) || 0 };
+  // 결제자는 사람 이름이다. 모델에는 자리표로 보낸다.
+  const vault = createVault();
+  vault.learn([record.payer]);
+  // 단체의 예산 항목 목록. 화면이 보내지 않았으면(바깥에서 부른 경우) 빈 목록이고, 그때는 모델이 낸 이름을 그대로 쓴다.
+  const categories = Array.isArray(input.categories) ? normalizeCategories(input.categories) : [];
   const messages = input.messages;
   const canAsk = input.canAsk !== false;
   let finishWarned = false;
@@ -313,7 +329,7 @@ export async function runExpenseAgent(input: ExpenseRunInput, deps: LinerDeps = 
           paymentMethod: { type: "string", enum: PAYMENTS, description: "org_card 조직카드, transfer 계좌이체, personal 개인 카드·사비, cash 현금" },
           purpose: { type: "string" },
           project: { type: "string" },
-          budgetCategory: { type: "string" },
+          budgetCategory: categories.length ? { type: "string", enum: categories, description: "이 단체의 예산 항목. 반드시 이 가운데 가장 가까운 것을 고른다. 새 이름을 만들지 않는다" } : { type: "string" },
           payer: { type: "string" },
           reimbursement: { type: "string", enum: ["needed", "not_needed"] },
           docType: { type: "string", enum: [...DOC_TYPES], description: "이미지가 어떤 서류인지. 나중에 같은 거래의 서류를 묶을 때 쓴다" },
@@ -327,8 +343,10 @@ export async function runExpenseAgent(input: ExpenseRunInput, deps: LinerDeps = 
         if (seen && seen !== docType) { docType = seen; hooks.onDocType?.(seen); }
         for (const f of RECORD_FIELDS) {
           if (!(f in args)) continue;
-          const v = normalizeField(f, args[f]);
+          let v = normalizeField(f, args[f]);
           if (v === undefined) continue;
+          // 예산 항목은 단체의 목록에서 끌어다 쓴다. 모델이 목록에 없는 이름을 내면 가장 가까운 항목으로 맞춘다.
+          if (f === "budgetCategory" && categories.length) v = matchCategory(v, categories);
           if (locked.has(f)) {
             skipped.push(f);
             continue;
@@ -356,7 +374,7 @@ export async function runExpenseAgent(input: ExpenseRunInput, deps: LinerDeps = 
           return [...m].map(([name, n]) => ({ name, count: n }));
         };
         return {
-          result: { projects: count((h) => h.project), budgetCategories: count((h) => h.budgetCategory), recent: hist.slice(-10) },
+          result: { projects: count((h) => h.project), budgetCategories: count((h) => h.budgetCategory), ...(categories.length ? { allowedBudgetCategories: categories } : {}), recent: hist.slice(-10) },
           step: { tool: "lookup_history", label: "지난 기록을 확인했습니다", detail: `${hist.length}건` },
         };
       },
@@ -417,7 +435,7 @@ export async function runExpenseAgent(input: ExpenseRunInput, deps: LinerDeps = 
         return { result: null, defer: true, emitArgs: { questions }, stop: { status: "ask", questions, pendingCallId: call.id }, step: { tool: "ask_user", label: `알 수 없는 ${questions.length}가지를 여쭙니다`, detail: questions.map((q) => FIELD_LABEL[q.field]).join(", ") } };
       },
     },
-    searchTool(state, deps),
+    searchTool(state, deps, vault),
     {
       name: "finish",
       description: "증빙 묶음 정리를 마친다. 요약과 확인할 자료 체크리스트를 사람에게 넘긴다.",
@@ -453,7 +471,7 @@ export async function runExpenseAgent(input: ExpenseRunInput, deps: LinerDeps = 
   // 화면이 질문 도구를 제공하지 않은 실행에서는 묻지 않고 있는 정보로 마무리하게 한다.
   const usable = canAsk ? tools : tools.filter((t) => t.name !== "ask_user");
   const system = canAsk ? EXPENSE_SYSTEM : EXPENSE_SYSTEM + "\n\n이번 실행에서는 사용자에게 물을 수 없습니다. 있는 정보로 기록을 채우고, 빠진 것은 그대로 둔 채 finish로 마무리하세요.";
-  const stop = (await runLoop({ system, messages, tools: usable, deps, hooks })) as any;
+  const stop = (await runLoop({ system, messages, tools: usable, deps, hooks, vault })) as any;
   const base = { record, docType, aiFields: [...aiFields], sources: state.sources, searches: state.searches, asks: state.asks };
   if (stop?.status === "ask") return { ...base, status: "ask", questions: stop.questions, pendingCallId: stop.pendingCallId, summary: "", checklist: [] };
   if (stop?.status === "done") return { ...base, status: "done", questions: [], summary: stop.summary, checklist: stop.checklist };
@@ -500,6 +518,9 @@ export async function runCloseAgent(
 ): Promise<CloseAgentOutput> {
   const records = (Array.isArray(input.records) ? input.records : []).slice(0, 100).map((e) => withStatus({ ...e, guidance: undefined }));
   const state = { sources: [] as Source[], searches: 0 };
+  // 결제자, 제출자, 승인자, 되돌린 사람은 사람 이름이다. 모델에는 자리표로 보낸다.
+  const vault = createVault();
+  vault.learn(records.flatMap((e) => [e.payer, e.submittedBy, e.approvedBy, e.returned?.by]));
   const requests = new Map<string, CloseRequest>();
   const brief = (e: Expense) => ({
     id: e.id, date: e.date, item: e.item, amount: e.amount, payment: e.paymentMethod ? PAYMENT_LABEL[e.paymentMethod] : "",
@@ -528,7 +549,7 @@ export async function runCloseAgent(
         };
       },
     },
-    searchTool(state, deps),
+    searchTool(state, deps, vault),
     {
       name: "draft_request",
       description: "보완이 필요한 기록 한 건에 대해 담당자(또는 승인자)에게 보낼 요청 문안 초안을 쓴다. 보내지는 않는다.",
@@ -555,7 +576,7 @@ export async function runCloseAgent(
     },
   ];
   const messages: any[] = input.messages?.length ? input.messages : [{ role: "user", content: `"${input.project}" 사업의 정산 마감 전 점검을 해 주세요.` }];
-  const stop = (await runLoop({ system: CLOSE_SYSTEM, messages, tools, deps, hooks })) as any;
+  const stop = (await runLoop({ system: CLOSE_SYSTEM, messages, tools, deps, hooks, vault })) as any;
   const open = records.filter((e) => e.status !== "done").length;
   return {
     briefing: stop?.briefing || `기록 ${records.length}건 중 ${open}건에 확인할 항목이 남아 있습니다.`,

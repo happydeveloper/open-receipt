@@ -160,6 +160,8 @@ export async function handleExpenseRun(req: Request, deps?: LinerDeps): Promise<
   const ev = st.evidence ?? {};
   const evidence = { kind: ["receipt", "alternative", "none"].includes(ev.kind) ? ev.kind : "none", hasImage: !!ev.hasImage, hasReason: !!ev.hasReason } as const;
   const history = Array.isArray(st.history) ? st.history.slice(0, 50) : [];
+  // 단체의 예산 항목 목록. 있으면 에이전트가 이 가운데에서 고른다.
+  const categories: string[] | undefined = Array.isArray(st.categories) ? st.categories.map(String).slice(0, 60) : undefined;
   const aiFields: string[] = Array.isArray(st.aiFields) ? st.aiFields.map(String) : [];
   const canAsk = (input.tools ?? []).some((t: any) => t?.name === ASK_USER_TOOL);
 
@@ -184,7 +186,7 @@ export async function handleExpenseRun(req: Request, deps?: LinerDeps): Promise<
       const hooks = eventHooks(emit);
       const known = new Set(aiFields);
       const out = await runExpenseAgent(
-        { messages, record, locked, evidence, history, sources: snapshot.sources, searches: snapshot.searches, asks: snapshot.asks, canAsk },
+        { messages, record, locked, evidence, history, categories, sources: snapshot.sources, searches: snapshot.searches, asks: snapshot.asks, canAsk },
         deps ?? defaultDeps(),
         {
           ...hooks,

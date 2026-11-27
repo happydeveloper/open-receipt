@@ -91,6 +91,8 @@
 | `group.ts` | 같은 거래의 서류 묶기: 묶음 제안 검증, 여러 기록을 한 건으로 합치는 규칙 |
 | `agui-server.ts` | 에이전트의 진행을 AG-UI 이벤트 스트림으로 바꾸는 어댑터 |
 | `guard.ts`, `mask.ts`, `guidelines.ts`, `draft.ts` | 판정 표현 걸러내기, 민감 정보 가림, 검색 결과 다듬기, 금액 다듬기 |
+| `categories.ts` | 예산 항목: 기본 목록, 더하고 빼기, 에이전트가 낸 이름을 목록의 항목으로 맞추기 |
+| `privacy.ts` | 모델로 보내는 글의 이름과 번호를 자리표로 바꾸고 받은 답에서 되돌린다. PDF의 글자 자리에서 가릴 상자를 제안한다 |
 | `rate-limit.ts` | 에이전트와 동기화 엔드포인트 호출 제한. 주소별로 세고, 없는 공간을 되풀이해 찾는 주소는 한동안 받지 않는다 |
 | `security-headers.ts` | 모든 응답에 붙이는 보안 헤더(내용 보안 정책 등). `next.config.ts`가 쓴다 |
 | `closing.ts` | 사업 마감: 누가 마감할 수 있는지, 마감된 사업의 변경 되돌리기, 두 기기의 마감 합치기 |
@@ -119,7 +121,7 @@
 영수증을 올려 승인되기까지입니다.
 
 1. **사진과 가림** (`app/app/page.tsx`). 사진을 긴 변 1600px 이하로 줄이고, 사용자가 그린 상자를 검게 덮은 사본을 만듭니다(`lib/mask.ts`). 원본은 이 기기의 IndexedDB에만 둡니다.
-2. **에이전트 실행**. 화면이 `@ag-ui/client`의 `HttpAgent`로 `/api/agent/expense`를 부릅니다. 가린 사진, 메모(숫자 패턴을 가린 것), 지금까지의 기록 값, 사람이 넣어 잠긴 필드 목록을 보냅니다.
+2. **에이전트 실행**. 화면이 `@ag-ui/client`의 `HttpAgent`로 `/api/agent/expense`를 부릅니다. 가린 사진, 메모, 지금까지의 기록 값, 사람이 넣어 잠긴 필드 목록을 보냅니다. 서버는 모델을 부르기 직전에 글 속의 사람 이름과 번호를 자리표로 바꾸고(`lib/privacy.ts`, `lib/agent.ts`의 `runLoop`), 받은 답의 자리표를 원래 값으로 되돌립니다. 기록과 화면에는 원래 값이, 모델 쪽에는 자리표만 있습니다.
 3. **도구 반복** (`lib/agent.ts`의 `runLoop`). 모델이 도구를 고르면 서버가 실행하고 결과를 돌려주기를 되풀이합니다. 도구는 기록 채우기, 지난 기록 조회, 묶음 점검, 사용자에게 묻기, 공개 지침 검색, 마무리 여섯 가지입니다. 승인하거나 확정하는 도구는 없습니다.
 4. **질문**. 모델이 `ask_user`를 부르면 서버는 답하지 않고 실행을 끝냅니다. 화면이 질문 카드를 띄우고, 답을 대화에 붙여 다음 실행을 시작합니다. 서버는 실행 사이에 아무것도 기억하지 않습니다.
 5. **결과 반영** (`lib/flow.ts`의 `applyAgentRecord`). 돌아온 값을 기록에 넣되 사람이 넣은 값은 덮어쓰지 않고, AI가 채운 필드에는 "AI 초안" 표시를 붙입니다.
@@ -137,6 +139,7 @@
 | 상태는 사람의 확정·승인으로만 바뀐다. 에이전트에는 그런 도구가 없다 | `lib/status.ts`, `lib/agent.ts` | `tests/core.test.ts` T-15 |
 | 사람이 넣은 값은 에이전트가 덮어쓰지 못한다 | `lib/agent.ts`, `lib/flow.ts` | `tests/agent.test.ts`, `tests/core.test.ts` |
 | AI에는 가린 사진만 간다. 원본은 기기와 구성원에게만 있다 | `app/app/page.tsx`, `lib/originals.ts` | `e2e/demo.spec.ts` |
+| 모델과 검색으로 나가는 글에 사람 이름과 번호가 없다 | `lib/privacy.ts`, `lib/agent.ts` | `tests/privacy.test.ts` |
 | "확인할 자료"에는 검색 결과에 실제로 있는 주소만 달린다 | `lib/agent.ts`의 `validChecklist` | `tests/agent.test.ts` |
 | 적법·위반 같은 판정을 하지 않는다 | `lib/guard.ts` | `tests/core.test.ts` T-11 |
 | API 키는 `lib/liner.ts`에서만 읽고 브라우저 코드에 섞이지 않는다 | `lib/liner.ts` | `tests/proxy.test.ts` T-21 |

@@ -30,6 +30,8 @@ export interface SharedSettings {
   budgets?: Record<string, Record<string, number>>;
   /** 마감한 사업 (lib/closing.ts). 다른 설정과 달리 사업마다 나중 것이 남도록 따로 합친다 */
   closed?: Record<string, { at: string; by: string; open?: boolean }>;
+  /** 단체가 쓰는 예산 항목 목록 (lib/categories.ts) */
+  categories?: string[];
 }
 export interface SyncDoc {
   v: 1;
