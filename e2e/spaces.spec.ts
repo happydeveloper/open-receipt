@@ -8,7 +8,7 @@
  *     "이 기기에서만"으로 시작한 공간은 링크가 없다고 알려 주고, 공간 목록에서 바로 초대 링크를 만들 수 있다.
  *  3. 첫 공간을 다시 열면 첫 공간의 기록과 초대 링크 ㄱ이 그대로다. 두 공간의 기록은 섞이지 않는다.
  *  4. 사업 하나의 공유 링크를 열면 그 사업의 결산 내역이, 거래처 한 곳의 공유 링크를 열면 그 거래처와의 거래만 보인다.
- *  5. 다른 기기가 ㄱ에 참여한 뒤 ㄴ의 초대 링크를 열면, 공간이 따로 생겨 두 단체의 기록이 섞이지 않는다.
+ *  5. 다른 기기가 ㄱ에 참여한 뒤 ㄴ의 초대 링크를 열면 기록이 합쳐진다고 알린다. "새 공간으로 참여"를 고르면 공간이 따로 생겨 두 단체의 기록이 섞이지 않는다.
  *  6. 쓰지 않는 공간은 두 번 눌러 이 기기에서 지운다.
  */
 import { expect, test, type Page } from "@playwright/test";
@@ -147,7 +147,11 @@ test("공간 여러 개와 사업별·거래처별 공유 링크", async ({ page
   await member.goto(inviteB);
   await member.reload();
   await expect(member.getByRole("heading", { name: "초대받은 단체 공간에 참여합니다" })).toBeVisible({ timeout: 60_000 });
-  await expect(member.locator("main")).not.toContainText("단체 공간에 합쳐집니다"); // 첫 단체의 기록을 올리지 않는다
+  // 묻지 않고 공간을 따로 만들지 않는다. 합쳐진다고 알리고, 섞지 않으려면 새 공간을 고르게 한다
+  await expect(member.getByTestId("join-merge")).toContainText("단체 공간에 합쳐집니다");
+  await member.getByRole("button", { name: "기록을 섞지 않고 새 공간으로 참여" }).click();
+  await expect(member.getByRole("heading", { name: "초대받은 단체 공간에 참여합니다" })).toBeVisible({ timeout: 60_000 });
+  await expect(member.getByTestId("join-merge")).toHaveCount(0); // 새 공간은 비어 있어 합칠 것이 없다
   await member.locator("#j-name").fill("이회원");
   await member.getByRole("button", { name: "참여하기" }).click();
   await expect(member.getByRole("button", { name: "설정" })).toBeVisible({ timeout: 60_000 });
@@ -206,4 +210,83 @@ test("느린 연결: 동기화가 끝나기 전에 적은 기록이 사라지지
     await syncDevice(page);
     await expect(page.getByText("동기화 중에 적은 지출").first()).toBeVisible({ timeout: 3000 });
   }).toPass({ timeout: 60_000 });
+});
+
+test("가만히 열어 둔 기기도 받는다: 다른 사람이 다른 사업에 올린 기록이 저절로 들어오고, 어느 사업에 있는지 보인다", async ({ page, browser }) => {
+  test.setTimeout(240_000);
+  await page.goto("/app");
+  await page.getByRole("button", { name: "데모 데이터 불러오기" }).click();
+  await page.getByRole("button", { name: "설정" }).click();
+  await page.getByRole("button", { name: "단체 공간 만들기" }).click();
+  await expect(page.getByTestId("workspace")).toContainText("동기화했습니다.", { timeout: 60_000 });
+  const invite = await page.locator("#invite-link").inputValue();
+  await page.getByRole("button", { name: "지출 목록으로" }).click();
+
+  const member = await (await browser.newContext(mobile)).newPage();
+  await member.goto(invite);
+  await member.locator("#j-name").fill("이회원");
+  await member.getByRole("button", { name: "참여하기" }).click();
+  await expect(member.getByText("교통비").first()).toBeVisible({ timeout: 60_000 });
+  // 이회원이 새 사업 이름으로 적는다. 동기화 단추는 누르지 않는다 (적으면 저절로 올라간다)
+  await writeDown(member, "캠프 간식", "9000", "겨울 캠프");
+
+  // 총무는 아무것도 누르지 않는다. 잠시 뒤 안내가 뜨고, 다른 사업에 기록이 있다고 보인다
+  await expect(page.getByTestId("other-projects").getByRole("button", { name: "겨울 캠프 1건" })).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator("main")).toContainText('"겨울 캠프" 사업에 있습니다.');
+  await expect(page.getByText("교통비").first()).toBeVisible(); // 보던 사업은 그대로다
+  await page.getByTestId("other-projects").getByRole("button", { name: "겨울 캠프 1건" }).click();
+  await expect(page.getByText("캠프 간식").first()).toBeVisible();
+  await expect(page.getByTestId("other-projects").getByRole("button", { name: "자원봉사자 워크숍 2건" })).toBeVisible();
+
+  // 총무가 겨울 캠프에 하나 더 적으면, 가만히 있던 이회원 기기에도 들어온다
+  await writeDown(page, "버스 대절", "200000", "겨울 캠프");
+  // 이회원이 겨울 캠프를 보고 있으면 목록에, 다른 사업을 보고 있으면 "다른 사업·행사의 기록"에 나타난다
+  await expect(member.getByText("버스 대절").first().or(member.getByTestId("other-projects").getByRole("button", { name: "겨울 캠프 2건" }))).toBeVisible({ timeout: 90_000 });
+});
+
+test("초대 링크로 참여해도 이 기기의 기록은 지워지지 않고 단체 공간에 합쳐진다", async ({ page, browser }) => {
+  test.setTimeout(240_000);
+  // 총무: 데모 기록 2건으로 단체 공간을 만든다
+  await page.goto("/app");
+  await page.getByRole("button", { name: "데모 데이터 불러오기" }).click();
+  await page.getByRole("button", { name: "설정" }).click();
+  await page.getByRole("button", { name: "단체 공간 만들기" }).click();
+  await expect(page.getByTestId("workspace")).toContainText("동기화했습니다.", { timeout: 60_000 });
+  const invite = await page.locator("#invite-link").inputValue();
+  await page.getByRole("button", { name: "지출 목록으로" }).click();
+
+  // 회원: 혼자 쓰면서 기록을 두 건 적어 둔 기기
+  const member = await (await browser.newContext(mobile)).newPage();
+  await member.goto("/app");
+  await member.locator("#s-org").fill("다온 나눔모임 (가상)");
+  await member.locator("#s-submitter").fill("이회원");
+  await member.locator("#s-project").fill("자원봉사자 워크숍");
+  await member.getByRole("button", { name: "시작하기" }).click();
+  await writeDown(member, "내가 적어 둔 간식", "8000", "자원봉사자 워크숍");
+  await writeDown(member, "내가 적어 둔 주차비", "3000", "자원봉사자 워크숍");
+
+  // 초대 링크를 연다: 공간을 따로 만들지 않고, 합쳐진다고 알린다
+  await member.goto(invite);
+  await member.reload();
+  await expect(member.getByTestId("join-merge")).toContainText("이 기기에 있던 기록 2건도 단체 공간에 합쳐집니다.", { timeout: 60_000 });
+  await member.locator("#j-name").fill("이회원");
+  await member.getByRole("button", { name: "참여하기" }).click();
+  // 회원 기기: 내 기록 2건이 그대로 있고, 단체의 기록 2건도 들어온다
+  await expect(member.getByText("교통비").first()).toBeVisible({ timeout: 60_000 });
+  for (const item of ["내가 적어 둔 간식", "내가 적어 둔 주차비", "인쇄물"]) await expect(member.getByText(item).first()).toBeVisible();
+  await member.getByRole("button", { name: "설정" }).click();
+  await expect(member.getByTestId("space-row")).toHaveCount(1); // 공간이 따로 생기지 않았다
+  await member.getByRole("button", { name: "지출 목록으로" }).click();
+  await syncDevice(member);
+
+  // 총무 기기: 회원이 적어 둔 기록 2건이 들어온다. 총무의 기록도 그대로다
+  await expect(async () => {
+    await syncDevice(page);
+    await expect(page.getByText("내가 적어 둔 간식").first()).toBeVisible({ timeout: 3000 });
+  }).toPass({ timeout: 60_000 });
+  for (const item of ["내가 적어 둔 주차비", "교통비", "인쇄물"]) await expect(page.getByText(item).first()).toBeVisible();
+
+  // 새로 열어도 네 건이 그대로 남아 있다
+  await member.reload();
+  for (const item of ["내가 적어 둔 간식", "내가 적어 둔 주차비", "교통비", "인쇄물"]) await expect(member.getByText(item).first()).toBeVisible({ timeout: 60_000 });
 });

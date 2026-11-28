@@ -242,7 +242,7 @@ async function syncDevice(p: Page) {
   await expect.poll(async () => Number(await status.getAttribute("data-sync-count")), { timeout: 60_000 }).toBeGreaterThan(before);
 }
 
-test("단체 공간은 가만히 두면 서버를 계속 부르지 않는다", async ({ page }) => {
+test("단체 공간은 가만히 두면 서버를 자주 부르지 않는다 (20초에 한 번 묻는 것 말고는)", async ({ page }) => {
   await page.goto("/app");
   await page.getByRole("button", { name: "데모 데이터 불러오기" }).click();
   await page.getByRole("button", { name: "설정" }).click();

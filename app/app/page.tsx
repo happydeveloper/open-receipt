@@ -191,6 +191,8 @@ function download(name: string, text: string, type: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** 단체 공간에서 화면을 열어 둔 동안 다른 사람의 변경을 묻는 간격 */
+const POLL_MS = 20_000;
 /** 지금 열려 있는 공간의 자리 이름. 공간을 바꾸면 화면을 새로 열기 때문에 한 번만 읽는다. */
 let slotCache: string | null = null;
 const activeSlot = () => (slotCache ??= loadSpaces(window.localStorage).active);
@@ -403,8 +405,9 @@ export default function Home() {
   const [dragBox, setDragBox] = useState<Box | null>(null);
 
   useEffect(() => {
-    // 초대 링크로 들어왔는데 지금 공간이 이미 다른 단체 공간에 연결되어 있으면, 두 단체의 기록이 섞이지 않게 공간을 따로 둔다.
-    // 이미 참여한 단체 공간의 링크면 그 공간을 연다.
+    // 초대 링크로 들어왔을 때: 이 기기의 다른 공간이 이미 그 단체 공간에 참여해 있으면 그 공간을 연다.
+    // 그 밖에는 지금 공간에서 참여 화면을 연다. 참여하면 이 기기의 기록이 단체 공간에 합쳐진다.
+    // (한때 연결된 기기에서는 묻지 않고 빈 공간을 따로 만들었는데, 기록이 사라진 것처럼 보이고 합쳐지지도 않았다. 따로 두는 것은 참여 화면에서 사람이 고른다.)
     const arrived = parseInvite(window.location.hash);
     if (arrived) {
       const all = loadSpaces(window.localStorage);
@@ -413,10 +416,6 @@ export default function Home() {
         saveSpaces(window.localStorage, openSpace(all, home));
         window.history.replaceState(null, "", window.location.pathname);
         return window.location.reload();
-      }
-      if (home === null && loadMeta(spaceKV()).ws && all.list.length < SPACE_MAX) {
-        saveSpaces(window.localStorage, addSpace(all, newSlot()));
-        return window.location.reload(); // 주소의 초대 링크는 그대로 남아, 새 공간에서 참여 화면이 열린다
       }
     }
     const st = loadSettings(spaceKV());
@@ -477,6 +476,14 @@ export default function Home() {
         if (out.news.added) parts.push(`${out.news.addedBy.length ? `${out.news.addedBy.slice(0, 3).join(", ")} 님이 올린 ` : ""}지출 ${out.news.added}건이 들어왔습니다.`);
         if (out.news.approved) parts.push(`${out.news.approvedBy.length ? `${out.news.approvedBy.slice(0, 3).join(", ")} 님이 ` : ""}${out.news.approved}건을 승인했습니다.`);
         if (out.news.returned) parts.push(`${out.news.returnedBy.length ? `${out.news.returnedBy.slice(0, 3).join(", ")} 님이 ` : ""}${out.news.returned}건을 되돌렸습니다. 사유를 확인해 주세요.`);
+        // 들어온 기록이 지금 보는 사업이 아닌 곳에 있으면 어디에 있는지 알린다. 지금 보는 사업이 비어 있고 한 곳에만 들어왔으면 그 사업을 연다.
+        const had = new Set(cur.map((e) => e.id));
+        const landed = [...new Set(out.expenses.filter((e) => !had.has(e.id) && e.project).map((e) => e.project))];
+        const elsewhereNew = landed.filter((p) => p !== project);
+        if (out.news.added && elsewhereNew.length) {
+          if (landed.length === 1 && !out.expenses.some((e) => e.project === project)) { setProject(landed[0]); resetClose(); }
+          else parts.push(`"${elsewhereNew.slice(0, 3).join('", "')}" 사업에 있습니다. 위의 사업·행사에서 골라 보세요.`);
+        }
         if (parts.length) setToast(parts.join(" "));
         // 두 기기의 수정이 섞인 기록은 어느 기기도 서명한 적 없는 내용이다. 합친 이 기기가 서명해 둔다.
         if (out.mergedIds.length) {
@@ -540,6 +547,16 @@ export default function Home() {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, meta.ws?.id, list, myLines, settings.org, settings.funder, settings.approver, settings.projects.join("|"), settings.sponsorView, settings.sponsorNames, settings.submitterApproves, JSON.stringify(settings.budgets)]);
+  // 화면을 열어 둔 채 가만히 있어도 다른 사람이 올린 기록을 받는다. 화면이 보일 때만, 드문드문 묻는다.
+  // 바뀐 것이 없으면 서버는 "그대로"라고만 답하고 이 기기도 아무것도 올리지 않는다.
+  useEffect(() => {
+    if (!ready || !meta.ws) return;
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible" && !live.current.busy && Date.now() - lastSyncAt.current > POLL_MS - 1000) void doSync(undefined, true);
+    }, POLL_MS);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, meta.ws?.id]);
   // 후원자용 보기 링크: 구성원 열쇠에서 한 방향으로 만든 열쇠를 담는다.
   useEffect(() => {
     if (!meta.ws) return setViewerLink("");
@@ -582,6 +599,12 @@ export default function Home() {
     if (!saveExpenses(spaceKV(), next, deviceMasked)) setToast("저장 공간이 부족해 이 기기에 저장하지 못했습니다. 오래된 기록을 내보낸 뒤 정리해 주세요.");
   };
   const vendors = useMemo(() => vendorsOf(list), [list]);
+  /** 지금 보는 사업 말고 기록이 있는 사업과 건수. 다른 사람이 다른 사업에 올린 기록을 놓치지 않게 목록 화면에 보인다 */
+  const elsewhere = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const e of list) if (e.project && e.project !== project) m.set(e.project, (m.get(e.project) ?? 0) + 1);
+    return [...m.entries()];
+  }, [list, project]);
   const projects = useMemo(() => [...new Set([...settings.projects, project, ...list.map((e) => e.project)].filter(Boolean))], [list, project, settings.projects]);
   const mine = useMemo(() => sortByDate(list.filter((e) => e.project === project)), [list, project]);
   const attention = useMemo(() => needsAttention(mine), [mine]);
@@ -838,7 +861,7 @@ export default function Home() {
 
   /* ---------- 공간 (한 기기에서 여러 장부) ---------- */
   const spaceRows: SpaceInfo[] = useMemo(
-    () => (ready && (view === "settings" || view === "intro") ? loadSpaces(window.localStorage).list.map((x) => describeSpace(window.localStorage, x.slot)) : []),
+    () => (ready && (view === "settings" || view === "intro" || view === "list") ? loadSpaces(window.localStorage).list.map((x) => describeSpace(window.localStorage, x.slot)) : []),
     // 지금 공간의 이름, 건수, 연결이 바뀌면 다시 읽는다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [ready, view, settings.org, list.length, meta.ws, spaceTick],
@@ -1220,7 +1243,17 @@ export default function Home() {
               : "참여하면 이 단체의 지출 기록을 이 기기에서도 보고, 올리고, 승인할 수 있습니다. 기록은 암호화되어 오가며 초대 링크를 가진 사람만 볼 수 있습니다."}</Text>
           </VStack>
           {err ? <Banner status="error" title={err} /> : null}
-          {list.length > 0 ? <Banner status="warning" title={`이 기기에 있던 기록 ${list.length}건도 단체 공간에 합쳐집니다.`} /> : null}
+          {list.length > 0 || meta.ws ? (
+            <VStack gap={2} data-testid="join-merge">
+              <Banner status="warning" title={list.length > 0 ? `이 기기에 있던 기록 ${list.length}건도 단체 공간에 합쳐집니다.` : "지금 연결된 단체 공간 대신 이 단체 공간에 연결됩니다."}
+                description={`기록은 지워지지 않고, 참여한 뒤 다른 구성원에게도 보입니다.${meta.ws && meta.ws.id !== joinWs.id ? " 이 기기는 지금 다른 단체 공간에 연결되어 있는데, 참여하면 그 연결이 이 단체 공간으로 바뀝니다." : ""} 다른 단체라서 기록을 섞고 싶지 않으면 아래에서 새 공간으로 참여하세요.`} />
+              <Sub label="기록을 섞지 않고 새 공간으로 참여" isDisabled={spaceRows.length >= SPACE_MAX} onClick={() => {
+                // 빈 공간을 만들어 연다. 주소의 초대 링크는 그대로 남아, 새 공간에서 참여 화면이 다시 열린다.
+                saveSpaces(window.localStorage, addSpace(loadSpaces(window.localStorage), newSlot()));
+                window.location.reload();
+              }} />
+            </VStack>
+          ) : null}
           <TextInput id="j-name" label="내 이름" value={draft.submitter} placeholder="예: 박대표" onChange={(v) => setDraft((d) => ({ ...d, submitter: v }))} />
           {isLocked(joinWs) ? <TextInput id="j-pass" type="password" label="단체 공간 암호" value={joinPass} onChange={setJoinPass} /> : null}
           <SegmentedControl label="내 역할" layout="fill" value={draft.approver === "approver" ? "approver" : "submitter"} onChange={(v) => setDraft((d) => ({ ...d, approver: v }))}>
@@ -1653,6 +1686,20 @@ export default function Home() {
               <Stat label="합계" value={won(totalAmount(mine))} />
               <Stat label="보완" value={`${attention.length}건`} />
             </HStack>
+            {spaceRows.length > 1 ? (
+              <HStack gap={2} align="center" justify="between" data-testid="space-now">
+                <Text type="supporting" color="secondary">{`지금 공간: ${settings.org || "이름 없는 공간"} · 다른 공간 ${spaceRows.length - 1}개에 기록 ${spaceRows.filter((x) => x.slot !== activeSlot()).reduce((n, x) => n + x.count, 0)}건`}</Text>
+                <Button label="공간 바꾸기" size="sm" variant="ghost" onClick={() => { setErr(""); go("settings"); }} />
+              </HStack>
+            ) : null}
+            {elsewhere.length ? (
+              <VStack gap={1} data-testid="other-projects">
+                <Text type="supporting" color="secondary">다른 사업·행사의 기록</Text>
+                <HStack gap={1.5} wrap="wrap">
+                  {elsewhere.map(([p, n]) => <Button key={p} label={`${p} ${n}건`} size="sm" variant="secondary" onClick={() => { setProject(p); resetClose(); setConfirmClosing(false); setFilter(NO_FILTER); }} />)}
+                </HStack>
+              </VStack>
+            ) : null}
             {mine.length > 0 ? (
               <HStack gap={2} align="end">
                 <VStack width="100%"><TextInput id="search" label="찾기" value={filter.q} placeholder="항목, 가게, 금액, 사람" onChange={(v) => setFilter((f) => ({ ...f, q: v }))} /></VStack>
