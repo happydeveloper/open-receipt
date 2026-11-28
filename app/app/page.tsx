@@ -312,6 +312,8 @@ export default function Home() {
   const [confirmDrop, setConfirmDrop] = useState<string | null>(null);
   const [spaceNote, setSpaceNote] = useState("");
   const [spaceTick, setSpaceTick] = useState(0);
+  /** 더 만든 공간을 시작할 때: 여러 사람과 함께 쓸지 (초대 링크를 바로 만든다), 혼자 쓸지 */
+  const [startShared, setStartShared] = useState("shared");
   /** 설정에서 만든 사업별·거래처별 공유 링크 */
   const [scopeShare, setScopeShare] = useState({ kind: "", name: "", link: "", note: "" });
   // 단체 공간 암호: 만들 때 정하는 암호, 참여할 때 넣는 암호. 기기 밖으로 나가지 않고 저장하지도 않는다.
@@ -926,11 +928,13 @@ export default function Home() {
     persist(resetToSeed(spaceKV()));
     setProject(DEMO_PROJECT); resetClose(); go("list");
   }
-  function startOwn() {
+  async function startOwn() {
     const next: Settings = { ...EMPTY_SETTINGS, org: draft.org.trim(), submitter: draft.submitter.trim(), approver: draft.approver.trim(), projects: draft.project.trim() ? [draft.project.trim()] : [], funder: draft.funder.trim(), onboarded: true };
     const miss = missingForStart(next);
     if (miss.length) return setErr(`${miss.join(", ")}을(를) 입력해 주세요.`);
     leaveWorkspace(); keep(next); persist([]); setProject(next.projects[0]); go("list");
+    // 더 만든 공간을 여러 사람과 함께 쓰겠다고 골랐으면, 이 공간의 단체 공간과 초대 링크를 바로 만들어 보여 준다.
+    if (canAbandon && startShared === "shared") { await createWorkspace(); go("settings"); }
   }
   /** 이 사업을 마감하거나 마감을 푼다. 승인할 수 있는 사람만 한다. */
   function setClosing(close: boolean) {
@@ -1248,6 +1252,15 @@ export default function Home() {
             {f("approver", "승인하는 사람", "예: 박대표", true)}
             {f("project", "첫 사업·행사 이름", "예: 자원봉사자 워크숍")}
             {f("funder", "지원기관", "예: 서울시. 에이전트가 지침을 찾을 때 참고합니다.", true)}
+            {canAbandon ? <>
+              <SegmentedControl label="이 공간을 누구와 쓰나요" layout="fill" value={startShared} onChange={setStartShared}>
+                <SegmentedControlItem value="shared" label="여러 사람과 함께" />
+                <SegmentedControlItem value="solo" label="이 기기에서만" />
+              </SegmentedControl>
+              <Note>{startShared === "shared"
+                ? "시작하면 이 공간의 초대 링크를 바로 만들어 보여 줍니다. 초대 링크는 공간마다 따로이고, 다른 공간의 링크로는 이 공간의 기록을 볼 수 없습니다."
+                : "기록은 이 기기에만 저장됩니다. 나중에 설정에서 초대 링크를 만들 수 있습니다."}</Note>
+            </> : null}
             <Main label="시작하기" onClick={startOwn} />
           </VStack>
         </Card>
@@ -1395,10 +1408,13 @@ export default function Home() {
             <List hasDividers edge="flush" density="compact">
               {spaceRows.map((sp) => {
                 const here = sp.slot === activeSlot();
-                const about = `기록 ${sp.count}건 · ${sp.connected ? (sp.locked ? "단체 공간 (암호)" : "단체 공간") : "이 기기에서만"}`;
+                const about = `기록 ${sp.count}건 · ${sp.connected ? (sp.locked ? "함께 쓰는 공간 (암호)" : "함께 쓰는 공간") : here ? "이 기기에서만" : "이 기기에서만 (열어서 초대 링크를 만드세요)"}`;
                 return (
                   <ListItem key={sp.slot || "first"} data-testid="space-row" label={sp.org || "이름 없는 공간"} description={here ? `${about} · 지금 열려 있음` : about}
-                    endContent={here ? null : (
+                    endContent={here ? (sp.connected
+                      ? <Button label="초대 복사" tooltip="이 공간의 초대 링크 복사" size="sm" variant="secondary" onClick={async () => { try { await navigator.clipboard.writeText(inviteLink); setSpaceNote("이 공간의 초대 링크를 복사했습니다."); } catch { setSpaceNote("복사하지 못했습니다. 아래 단체 공간 카드에서 링크를 직접 복사해 주세요."); } }} />
+                      : <Button label={syncing ? "만드는 중…" : "초대 링크 만들기"} size="sm" variant="secondary" isDisabled={syncing} onClick={createWorkspace} />
+                    ) : (
                       <HStack gap={1}>
                         <Button label="열기" tooltip={`${sp.org || "이름 없는 공간"} 열기`} size="sm" variant="secondary" onClick={() => switchSpace(sp.slot)} />
                         {sp.connected ? <Button label="초대 복사" tooltip="이 공간의 초대 링크 복사" size="sm" variant="ghost" onClick={async () => { try { await navigator.clipboard.writeText(`${window.location.origin}/app#${sp.invite}`); setSpaceNote(`"${sp.org || "이름 없는 공간"}" 초대 링크를 복사했습니다.`); } catch { setSpaceNote("복사하지 못했습니다. 그 공간을 열어 초대 링크를 직접 복사해 주세요."); } }} /> : null}
@@ -1452,6 +1468,7 @@ export default function Home() {
                 : <Button label="이 기기의 연결 끊기" variant="ghost" onClick={() => setConfirmLeave(true)} />}
               {confirmLeave ? <Note>연결을 끊어도 이 기기의 기록은 남습니다. 다시 참여하려면 초대 링크가 필요하니 먼저 복사해 두세요.</Note> : null}
             </> : <>
+              {spaceRows.length > 1 ? <Banner status="warning" title="이 공간은 아직 초대 링크가 없습니다" description="초대 링크는 공간마다 따로 만듭니다. 다른 공간의 링크로는 이 공간의 기록을 볼 수 없으니, 여러 사람이 이 공간에 올리려면 아래에서 단체 공간을 만들어 새 링크를 보내세요." data-testid="ws-none" /> : null}
               <Note>총무와 승인자가 각자 기기에서 같은 기록을 쓰려면 단체 공간을 만드세요. 만든 뒤 나오는 초대 링크를 보내면 됩니다.</Note>
               <TextInput id="ws-pass" type="password" label="단체 공간 암호 (선택)" value={wsPass} placeholder="6자 이상" status={wsPassErr ? { type: "error", message: wsPassErr } : undefined} onChange={(v) => { setWsPass(v); setWsPassErr(""); }} />
               <Note>암호를 정하면 초대 링크와 암호를 둘 다 알아야 참여할 수 있어, 링크가 다른 곳으로 새어도 기록을 열거나 고칠 수 없습니다. 암호는 서버에 보내지 않고 저장하지도 않습니다. 잊으면 되찾을 수 없으니 따로 적어 두세요.</Note>
