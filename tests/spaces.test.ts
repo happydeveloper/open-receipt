@@ -11,6 +11,7 @@ import { buildShare, decodeShare, encodeShare } from "@/lib/share";
 import { addSpace, describeSpace, dropSpace, loadSpaces, newSlot, normalizeSpaces, openSpace, saveSpaces, scopedBag, scopedKV, SPACE_MAX, SPACES_KEY, spaceOfWorkspace, wipeSpace } from "@/lib/spaces";
 import { loadExpenses, saveExpenses, STORAGE_KEY, type KV } from "@/lib/storage";
 import { EMPTY_META, loadMeta, saveMeta, SYNC_KEY } from "@/lib/sync-client";
+import { keepLocalEdits } from "@/lib/sync-merge";
 
 function memoryKV(): KV & { data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -151,5 +152,34 @@ describe("거래처별 공유", () => {
     const r = buildReport(all(), DEMO_PROJECT, "2026-11-24T00:00:00.000Z");
     expect(r.scope).toBeUndefined();
     expect(r.total).toBe(56900);
+  });
+});
+
+describe("동기화하는 사이에 이 기기에서 바뀐 것", () => {
+  const before = seedExpenses();
+  const fromOther = { ...demoSnackExpense(), id: "other-device" };
+  it("그 사이에 바뀐 것이 없으면 동기화 결과 그대로다", () => {
+    const synced = [...before, fromOther];
+    expect(keepLocalEdits(before, before, synced)).toEqual({ expenses: synced, dirty: false });
+    expect(keepLocalEdits(before, [...before], synced).dirty).toBe(false);
+  });
+  it("그 사이에 새로 적은 기록은 사라지지 않고, 다른 기기에서 온 기록도 남는다", () => {
+    const mine = { ...demoSnackExpense(), id: "just-written", item: "캠프 간식" };
+    const out = keepLocalEdits(before, [...before, mine], [...before, fromOther]);
+    expect(out.dirty).toBe(true);
+    expect(out.expenses.map((e) => e.id).sort()).toEqual([...before.map((e) => e.id), "just-written", "other-device"].sort());
+  });
+  it("그 사이에 고친 기록은 이 기기의 것을 남긴다", () => {
+    const edited = { ...before[0], item: "방금 고친 이름" };
+    const out = keepLocalEdits(before, [edited, ...before.slice(1)], [...before, fromOther]);
+    expect(out.dirty).toBe(true);
+    expect(out.expenses.find((e) => e.id === before[0].id)?.item).toBe("방금 고친 이름");
+    expect(out.expenses).toHaveLength(before.length + 1);
+  });
+  it("그 사이에 지운 기록은 결과에서도 빠진다", () => {
+    const out = keepLocalEdits(before, before.slice(1), [...before, fromOther]);
+    expect(out.dirty).toBe(true);
+    expect(out.expenses.some((e) => e.id === before[0].id)).toBe(false);
+    expect(out.expenses.some((e) => e.id === "other-device")).toBe(true);
   });
 });

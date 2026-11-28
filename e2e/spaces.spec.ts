@@ -176,3 +176,34 @@ test("공간 여러 개와 사업별·거래처별 공유 링크", async ({ page
   expect(await page.evaluate(() => Object.keys(localStorage).filter((k) => k.includes("@")))).toEqual([]);
   await expect(page.locator("#invite-link")).toHaveValue(inviteA); // 첫 공간은 그대로다
 });
+
+test("느린 연결: 동기화가 끝나기 전에 적은 기록이 사라지지 않고 다른 기기에 전해진다", async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  await page.goto("/app");
+  await page.getByRole("button", { name: "데모 데이터 불러오기" }).click();
+  await page.getByRole("button", { name: "설정" }).click();
+  await page.getByRole("button", { name: "단체 공간 만들기" }).click();
+  await expect(page.locator("#invite-link")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("workspace")).toContainText("동기화했습니다.", { timeout: 60_000 });
+  const invite = await page.locator("#invite-link").inputValue();
+
+  // 회원의 기기는 연결이 느리다: 서버와 주고받을 때마다 2초씩 걸린다
+  const ctx = await browser.newContext(mobile);
+  await ctx.route("**/api/sync/**", async (route) => { await new Promise((r) => setTimeout(r, 2000)); await route.continue(); });
+  const member = await ctx.newPage();
+  await member.goto(invite);
+  await member.locator("#j-name").fill("이회원");
+  await member.getByRole("button", { name: "참여하기" }).click();
+  // 참여하자마자(첫 동기화가 끝나기 전에) 지출을 적는다
+  await writeDown(member, "동기화 중에 적은 지출", "7000", "자원봉사자 워크숍");
+  await expect(member.getByText("교통비").first()).toBeVisible({ timeout: 60_000 }); // 단체의 기록을 받았다
+  await expect(member.getByText("동기화 중에 적은 지출").first()).toBeVisible(); // 방금 적은 기록이 그대로 있다
+  await syncDevice(member);
+  await expect(member.getByText("동기화 중에 적은 지출").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "지출 목록으로" }).click();
+  await expect(async () => {
+    await syncDevice(page);
+    await expect(page.getByText("동기화 중에 적은 지출").first()).toBeVisible({ timeout: 3000 });
+  }).toPass({ timeout: 60_000 });
+});

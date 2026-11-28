@@ -62,7 +62,7 @@ import { canOpen, EMPTY_META, httpApi, loadMeta, saveMeta, SYNC_KEY, syncNow, ty
 import { deviceMasked as allMasked, deviceOriginals as allOriginals } from "@/lib/originals";
 import { addSpace, describeSpace, dropSpace, loadSpaces, newSlot, openSpace, saveSpaces, scopedBag, scopedKV, SPACE_MAX, spaceOfWorkspace, wipeSpace, type SpaceInfo } from "@/lib/spaces";
 import { inviteCode, isLocked, newLockedWorkspace, newWorkspace, parseInvite, passwordProblem, unlockInvite, viewCode, viewerWorkspace, type Workspace } from "@/lib/sync-crypto";
-import { touchChanged } from "@/lib/sync-merge";
+import { keepLocalEdits, touchChanged } from "@/lib/sync-merge";
 import { approvalBlock, approveExpense, attachEvidence, confirmExpense, returnExpense, detachEvidence, duplicateIds, evidenceMissing, findDuplicates, missingFields, needsAttention, newExpense, openItems, reconfirmExpense, withStatus, type Actor } from "@/lib/status";
 import { hydrateImages, loadExpenses, resetToSeed, saveExpenses, STORAGE_KEY } from "@/lib/storage";
 import { PAYMENT_LABEL, STATUS_LABEL, type ChecklistItem, type Expense, type PaymentMethod, type Source, type Status } from "@/lib/types";
@@ -483,8 +483,11 @@ export default function Home() {
           const mixed = new Map(out.expenses.filter((e) => out.mergedIds.includes(e.id)).map((e) => [e.id, e]));
           void signChanges(cur, cur.map((e) => mixed.get(e.id) ?? e));
         }
-        setList(out.expenses); live.current.list = out.expenses;
-        saveExpenses(spaceKV(), out.expenses, deviceMasked);
+        // 동기화하는 사이에 이 기기에서 적거나 고치거나 지운 것은 결과 위에 되살린다. 그대로 덮어쓰면 방금 적은 기록이 사라진다.
+        const kept = keepLocalEdits(cur, live.current.list, out.expenses);
+        if (kept.dirty) live.current.again ??= { quiet: true }; // 되살린 변경을 올리려고 한 번 더 돈다
+        setList(kept.expenses); live.current.list = kept.expenses;
+        saveExpenses(spaceKV(), kept.expenses, deviceMasked);
         const nextSt: Settings = { ...live.current.settings, ...out.shared, sponsorView: out.shared.sponsorView === true, sponsorNames: out.shared.sponsorNames === true, submitterApproves: out.shared.submitterApproves === true, budgets: normalizeBudgets(out.shared.budgets), closed: normalizeClosings(out.shared.closed), categories: out.shared.categories ? normalizeCategories(out.shared.categories) : live.current.settings.categories, onboarded: true };
         setSettings(nextSt); live.current.settings = nextSt; saveSettings(spaceKV(), nextSt);
         if (!out.shared.projects.includes(project) && out.shared.projects[0]) setProject(out.shared.projects[0]);
@@ -492,7 +495,10 @@ export default function Home() {
       // 동기화하는 사이에 이 기기가 쓴 줄이 있을 수 있으니, 받은 원장을 지금 사본과 다시 합친다.
       await withLedger(async (cur2) => ({ me: cur2.me, ledger: (await mergeLedgers(cur2.ledger, out.ledger)).ledger }));
       setLedProblems(out.ledgerProblems);
-      keepMeta({ ws, version: out.version, uploaded: out.uploaded, tombstones: out.tombstones, sharedAt: out.sharedAt, syncedAt: out.syncedAt, clockOffset: out.clockOffset });
+      // 동기화하는 사이에 이 기기에서 지운 기록의 삭제 표시는 남긴다 (결과에는 없다).
+      const tombstones = { ...out.tombstones };
+      for (const [id, at] of Object.entries(live.current.meta.tombstones)) if (!(id in m.tombstones) && !(id in tombstones)) tombstones[id] = at;
+      keepMeta({ ws, version: out.version, uploaded: out.uploaded, tombstones, sharedAt: out.sharedAt, syncedAt: out.syncedAt, clockOffset: out.clockOffset });
       // 자동 동기화는 조용히: 앞서 보인 오류만 지우고, 직접 누른 동기화의 안내는 그대로 둔다.
       if (out.failedUploads) { setSyncNote(`동기화했지만 사진 ${out.failedUploads}장을 올리지 못했습니다. 다른 기기와 후원자에게는 이 사진이 보이지 않습니다. 잠시 뒤 다시 동기화해 보고, 계속되면 그 지출의 사진을 다시 올려 주세요.`); }
       else if (out.docUsage > 0.8) setSyncNote(`동기화했습니다. 단체 공간이 ${Math.round(out.docUsage * 100)}% 찼습니다. 가득 차면 더 올릴 수 없으니, 끝난 사업의 기록은 백업한 뒤 지워 주세요.`);

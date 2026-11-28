@@ -208,3 +208,26 @@ export function imagesOf(list: Expense[]): Map<string, string> {
   for (const e of list) for (const p of photosOf(e)) m.set(p.key, p.image);
   return m;
 }
+
+/**
+ * 동기화하는 사이에 이 기기에서 바뀐 것을 동기화 결과 위에 되살린다.
+ *
+ * 동기화는 시작할 때의 기록(before)을 서버와 합쳐 결과(synced)를 낸다. 사진을 올리느라 몇 초씩 걸리기도 하는데,
+ * 그 사이에 사람이 기록을 적거나 고치거나 지우면(now) 결과에는 그 변경이 없다. 결과로 그대로 덮어쓰면 방금 적은 기록이 사라진다.
+ * 그래서 그 사이에 새로 생겼거나 바뀐 기록은 이 기기의 것을 남기고, 지운 기록은 결과에서도 뺀다.
+ * 바뀌었는지는 같은 객체인지로 본다 (기록을 고칠 때마다 새 객체를 만든다).
+ * dirty가 true면 다음 동기화에서 이 변경을 올려야 한다.
+ */
+export function keepLocalEdits(before: Expense[], now: Expense[], synced: Expense[]): { expenses: Expense[]; dirty: boolean } {
+  if (now === before) return { expenses: synced, dirty: false };
+  const was = new Map(before.map((e) => [e.id, e]));
+  const have = new Set(now.map((e) => e.id));
+  const touched = new Map(now.filter((e) => was.get(e.id) !== e).map((e) => [e.id, e]));
+  const gone = new Set(before.filter((e) => !have.has(e.id)).map((e) => e.id));
+  if (!touched.size && !gone.size) return { expenses: synced, dirty: false };
+  const inSynced = new Set(synced.map((e) => e.id));
+  return {
+    expenses: [...synced.filter((e) => !gone.has(e.id)).map((e) => touched.get(e.id) ?? e), ...[...touched.values()].filter((e) => !inSynced.has(e.id))],
+    dirty: true,
+  };
+}
