@@ -13,8 +13,10 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
 import { hasReporter, reportError } from "@/lib/error-hook";
+import { deviceMasked, deviceOriginals } from "@/lib/originals";
 import { rescueBackup } from "@/lib/rescue";
 import { scrubText } from "@/lib/scrub";
+import { loadSpaces, scopedBag, scopedKV } from "@/lib/spaces";
 import { STORAGE_KEY } from "@/lib/storage";
 
 const RELOAD_KEY = "open-receipt:reloaded-at";
@@ -43,12 +45,14 @@ export function ErrorScreen({ error, reset, where }: { error: Error & { digest?:
     setReported(hasReporter());
   }, [error, where]);
   useEffect(() => {
-    try { setHasData(!!window.localStorage.getItem(STORAGE_KEY)); } catch { /* 저장소를 읽지 못하면 단추를 숨긴다 */ }
+    try { setHasData(!!scopedKV(window.localStorage, loadSpaces(window.localStorage).active).getItem(STORAGE_KEY)); } catch { /* 저장소를 읽지 못하면 단추를 숨긴다 */ }
   }, []);
 
   async function saveBackup() {
     try {
-      const back = await rescueBackup(window.localStorage);
+      const slot = loadSpaces(window.localStorage).active;
+      // 지금 열려 있던 공간의 기록을 내려받는다.
+      const back = await rescueBackup(scopedKV(window.localStorage, slot), undefined, scopedBag(deviceMasked, () => slot), scopedBag(deviceOriginals, () => slot));
       if (!back) return setNote("이 기기에 저장된 기록이 없습니다.");
       const url = URL.createObjectURL(new Blob([back.text], { type: "application/json" }));
       const a = document.createElement("a");

@@ -21,7 +21,10 @@ export interface ReportRow {
   summary: string;
 }
 export interface Report {
+  /** 보고서의 이름. 사업 보고서면 사업 이름, 거래처 내역이면 거래처 이름 */
   project: string;
+  /** 거래처 한 곳과의 거래만 추린 내역이면 "vendor". 없으면 사업별 결산보고서 */
+  scope?: "vendor";
   period: string;
   generatedAt: string;
   /** 마감한 사업이면 언제 마감했는지와, 마감한 주체로 보여 줄 이름(단체 이름). 마감 처리한 사람의 이름은 싣지 않는다 */
@@ -77,7 +80,36 @@ export function periodOf(list: Expense[]): string {
 export const closedLine = (c: { at: string; by: string }): string => `마감 ${c.at.slice(0, 10)}${c.by ? ` (${c.by})` : ""}`;
 
 export function buildReport(all: Expense[], project: string, generatedAt = new Date().toISOString(), budget: Record<string, number> = {}, closed?: { at: string; by: string } | null): Report {
-  const list = sortByDate(all.filter((e) => e.project === project));
+  return reportOf(sortByDate(all.filter((e) => e.project === project)), project, generatedAt, budget, closed);
+}
+
+/** 거래처 이름으로 묶을 때 쓰는 이름. 앞뒤 빈칸만 다듬는다 (같은 곳을 다르게 적었으면 따로 보인다). */
+export const vendorOf = (e: Expense) => e.merchant.trim();
+/** 기록에 나온 거래처와 거래 건수·금액. 금액이 큰 순서. 거래처를 적지 않은 기록은 뺀다. */
+export function vendorsOf(all: Expense[]): { name: string; count: number; amount: number }[] {
+  return group(all.filter((e) => vendorOf(e)), vendorOf);
+}
+/**
+ * 거래처 한 곳과의 거래 내역. 모든 사업에서 그 거래처의 지출만 추린다.
+ * 거래처에 보내는 자료라서 단체 안에서만 볼 것(확인할 항목, 환급 대상, 요약 문장)은 싣지 않는다.
+ * "예산 항목별" 자리에는 사업·행사별 합계가 들어간다.
+ */
+export function buildVendorReport(all: Expense[], vendor: string, generatedAt = new Date().toISOString()): Report {
+  const list = sortByDate(all.filter((e) => vendorOf(e) === vendor));
+  const r = reportOf(list, vendor, generatedAt, {}, null);
+  return {
+    ...r,
+    scope: "vendor",
+    byCategory: group(list, (e) => e.project),
+    rows: r.rows.map((row, i) => ({ ...row, budgetCategory: list[i].project || "미분류", summary: "" })),
+    openItems: [],
+    reimbursements: [],
+    reimbursementTotal: 0,
+    sources: [],
+  };
+}
+
+function reportOf(list: Expense[], project: string, generatedAt: string, budget: Record<string, number>, closed?: { at: string; by: string } | null): Report {
   const order: Status[] = ["done", "pending_approval", "needs_evidence", "draft"];
   const byStatus = group(list, (e) => STATUS_LABEL[e.status]).sort(
     (a, b) => order.findIndex((s) => STATUS_LABEL[s] === a.name) - order.findIndex((s) => STATUS_LABEL[s] === b.name),

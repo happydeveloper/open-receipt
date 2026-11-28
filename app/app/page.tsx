@@ -48,7 +48,7 @@ import { logEdits } from "@/lib/history";
 import { isPdf, PDF_MAX_PAGES, pdfToImages } from "@/lib/pdf";
 import { fitWithin, maskText, type Box } from "@/lib/mask";
 import { ATTACH_LABELS, mapPhotos, MAX_PHOTO_CHARS, newAttachmentId, photoKey, slotsOf } from "@/lib/photos";
-import { buildReport, reportPhotos, reportToHtml, won } from "@/lib/report";
+import { buildReport, buildVendorReport, reportPhotos, reportToHtml, vendorOf, vendorsOf, won } from "@/lib/report";
 import { ReceiptGallery } from "../receipts";
 import { ReportBody } from "../report-view";
 import { DEMO_PROJECT } from "@/lib/seed";
@@ -59,7 +59,8 @@ import { filterExpenses, isFiltering, NO_FILTER, type ListFilter } from "@/lib/s
 import { buildShare, encodeShare, LONG_LINK } from "@/lib/share";
 import { appendEntry, auditRecord, createIdentity, diffEntries, loadLedger, members, mergeLedgers, recordsFingerprint, saveLedger, shortPrint, summarize, type Audit, type LedgerState, type LedgerSummary, type Problem } from "@/lib/ledger";
 import { canOpen, EMPTY_META, httpApi, loadMeta, saveMeta, SYNC_KEY, syncNow, type SyncMeta } from "@/lib/sync-client";
-import { deviceMasked, deviceOriginals } from "@/lib/originals";
+import { deviceMasked as allMasked, deviceOriginals as allOriginals } from "@/lib/originals";
+import { addSpace, describeSpace, dropSpace, loadSpaces, newSlot, openSpace, saveSpaces, scopedBag, scopedKV, SPACE_MAX, spaceOfWorkspace, wipeSpace, type SpaceInfo } from "@/lib/spaces";
 import { inviteCode, isLocked, newLockedWorkspace, newWorkspace, parseInvite, passwordProblem, unlockInvite, viewCode, viewerWorkspace, type Workspace } from "@/lib/sync-crypto";
 import { touchChanged } from "@/lib/sync-merge";
 import { approvalBlock, approveExpense, attachEvidence, confirmExpense, returnExpense, detachEvidence, duplicateIds, evidenceMissing, findDuplicates, missingFields, needsAttention, newExpense, openItems, reconfirmExpense, withStatus, type Actor } from "@/lib/status";
@@ -190,6 +191,14 @@ function download(name: string, text: string, type: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** 지금 열려 있는 공간의 자리 이름. 공간을 바꾸면 화면을 새로 열기 때문에 한 번만 읽는다. */
+let slotCache: string | null = null;
+const activeSlot = () => (slotCache ??= loadSpaces(window.localStorage).active);
+/** 지금 열려 있는 공간의 저장소와 사진 보관함 (lib/spaces.ts) */
+const spaceKV = () => scopedKV(window.localStorage, activeSlot());
+const deviceMasked = scopedBag(allMasked, activeSlot);
+const deviceOriginals = scopedBag(allOriginals, activeSlot);
+
 /** 원본 보관함을 감싼 것: 서버로 올리려고 꺼낼 때, 너무 큰 원본은 줄여서 건넨다 (줄인 것으로 보관함도 바꾼다). */
 const fittedOriginals: typeof deviceOriginals = {
   ...deviceOriginals,
@@ -299,6 +308,12 @@ export default function Home() {
   const [syncNote, setSyncNote] = useState("");
   const [joinWs, setJoinWs] = useState<Workspace | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
+  /** 지우기를 한 번 누른 공간의 자리 이름. 한 번 더 눌러야 지운다 */
+  const [confirmDrop, setConfirmDrop] = useState<string | null>(null);
+  const [spaceNote, setSpaceNote] = useState("");
+  const [spaceTick, setSpaceTick] = useState(0);
+  /** 설정에서 만든 사업별·거래처별 공유 링크 */
+  const [scopeShare, setScopeShare] = useState({ kind: "", name: "", link: "", note: "" });
   // 단체 공간 암호: 만들 때 정하는 암호, 참여할 때 넣는 암호. 기기 밖으로 나가지 않고 저장하지도 않는다.
   const [wsPass, setWsPass] = useState("");
   const [wsPassErr, setWsPassErr] = useState("");
@@ -327,7 +342,7 @@ export default function Home() {
   const withLedger = (fn: (st: LedgerState) => Promise<LedgerState>) => {
     ledQueue.current = ledQueue.current.then(async () => {
       const next = await fn(live.current.led);
-      live.current.led = next; setLed(next); saveLedger(window.localStorage, next);
+      live.current.led = next; setLed(next); saveLedger(spaceKV(), next);
     }).catch(() => { /* 서명하지 못해도 기록은 저장되어 있다. 화면의 서명 표시로 드러난다. */ });
     return ledQueue.current;
   };
@@ -386,12 +401,28 @@ export default function Home() {
   const [dragBox, setDragBox] = useState<Box | null>(null);
 
   useEffect(() => {
-    const st = loadSettings(window.localStorage);
-    const loaded = loadExpenses(window.localStorage) ?? [];
+    // 초대 링크로 들어왔는데 지금 공간이 이미 다른 단체 공간에 연결되어 있으면, 두 단체의 기록이 섞이지 않게 공간을 따로 둔다.
+    // 이미 참여한 단체 공간의 링크면 그 공간을 연다.
+    const arrived = parseInvite(window.location.hash);
+    if (arrived) {
+      const all = loadSpaces(window.localStorage);
+      const home = spaceOfWorkspace(window.localStorage, all, arrived.id);
+      if (home !== null && home !== all.active) {
+        saveSpaces(window.localStorage, openSpace(all, home));
+        window.history.replaceState(null, "", window.location.pathname);
+        return window.location.reload();
+      }
+      if (home === null && loadMeta(spaceKV()).ws && all.list.length < SPACE_MAX) {
+        saveSpaces(window.localStorage, addSpace(all, newSlot()));
+        return window.location.reload(); // 주소의 초대 링크는 그대로 남아, 새 공간에서 참여 화면이 열린다
+      }
+    }
+    const st = loadSettings(spaceKV());
+    const loaded = loadExpenses(spaceKV()) ?? [];
     setSettings(st);
     setList(loaded);
-    setMeta(loadMeta(window.localStorage));
-    try { setLastBackupAt(window.localStorage.getItem(BACKUP_KEY) ?? ""); } catch { /* 읽지 못하면 백업한 적 없는 것으로 본다 */ }
+    setMeta(loadMeta(spaceKV()));
+    try { setLastBackupAt(spaceKV().getItem(BACKUP_KEY) ?? ""); } catch { /* 읽지 못하면 백업한 적 없는 것으로 본다 */ }
     if (st.projects[0]) setProject(st.projects[0]);
     // 초대 링크로 들어왔으면 참여 화면을, 처음 온 사람에게는 소개를 먼저 보여 준다.
     const invite = parseInvite(window.location.hash);
@@ -403,7 +434,7 @@ export default function Home() {
     // 사진은 큰 보관함에서 불러와 채운 뒤에 화면을 연다.
     hydrateImages(loaded, deviceMasked).then((full) => {
       setList(full); live.current.list = full; live.current.settings = st;
-      const kept = loadLedger(window.localStorage);
+      const kept = loadLedger(spaceKV());
       live.current.led = kept; setLed(kept);
       // 원장이 생기기 전부터 있던 기록은 이 기기가 지금 내용 그대로 서명해 둔다.
       if (!kept.me && full.length) void signChanges([], full);
@@ -417,7 +448,7 @@ export default function Home() {
    * 기기마다 시계가 조금씩 달라서, 그대로 찍으면 시계가 빠른 기기의 수정이 늘 이긴다.
    */
   const stampNow = () => new Date(Date.now() + (live.current.meta.ws ? live.current.meta.clockOffset ?? 0 : 0)).toISOString();
-  const keepMeta = (m: SyncMeta) => { setMeta(m); live.current.meta = m; saveMeta(window.localStorage, m); };
+  const keepMeta = (m: SyncMeta) => { setMeta(m); live.current.meta = m; saveMeta(spaceKV(), m); };
   /** 단체 공간과 맞춘다. 받아서 합치고, 합친 것을 올린다. */
   async function doSync(ws: Workspace | null = live.current.meta.ws, quiet = false) {
     if (!ws) return;
@@ -451,9 +482,9 @@ export default function Home() {
           void signChanges(cur, cur.map((e) => mixed.get(e.id) ?? e));
         }
         setList(out.expenses); live.current.list = out.expenses;
-        saveExpenses(window.localStorage, out.expenses, deviceMasked);
+        saveExpenses(spaceKV(), out.expenses, deviceMasked);
         const nextSt: Settings = { ...live.current.settings, ...out.shared, sponsorView: out.shared.sponsorView === true, sponsorNames: out.shared.sponsorNames === true, submitterApproves: out.shared.submitterApproves === true, budgets: normalizeBudgets(out.shared.budgets), closed: normalizeClosings(out.shared.closed), categories: out.shared.categories ? normalizeCategories(out.shared.categories) : live.current.settings.categories, onboarded: true };
-        setSettings(nextSt); live.current.settings = nextSt; saveSettings(window.localStorage, nextSt);
+        setSettings(nextSt); live.current.settings = nextSt; saveSettings(spaceKV(), nextSt);
         if (!out.shared.projects.includes(project) && out.shared.projects[0]) setProject(out.shared.projects[0]);
       }
       // 동기화하는 사이에 이 기기가 쓴 줄이 있을 수 있으니, 받은 원장을 지금 사본과 다시 합친다.
@@ -525,7 +556,7 @@ export default function Home() {
   const keep = (next: Settings) => {
     const prev = live.current.settings;
     const sharedChanged = prev.org !== next.org || prev.funder !== next.funder || prev.approver !== next.approver || prev.projects.join("|") !== next.projects.join("|") || prev.sponsorView !== next.sponsorView || prev.sponsorNames !== next.sponsorNames || prev.submitterApproves !== next.submitterApproves || JSON.stringify(prev.budgets) !== JSON.stringify(next.budgets) || JSON.stringify(prev.closed) !== JSON.stringify(next.closed) || prev.categories.join("|") !== next.categories.join("|");
-    setSettings(next); live.current.settings = next; saveSettings(window.localStorage, next);
+    setSettings(next); live.current.settings = next; saveSettings(spaceKV(), next);
     if (sharedChanged && live.current.meta.ws) keepMeta({ ...live.current.meta, sharedAt: stampNow() });
   };
   /** system: 사진 크기를 다시 맞추는 것처럼 내용을 바꾸지 않는 내부 저장. 마감 잠금을 따지지 않는다. */
@@ -540,8 +571,9 @@ export default function Home() {
     const next = touchChanged(prev, logEdits(prev, raw, live.current.settings.submitter || "담당자", at), at);
     setList(next); live.current.list = next;
     void signChanges(prev, next);
-    if (!saveExpenses(window.localStorage, next, deviceMasked)) setToast("저장 공간이 부족해 이 기기에 저장하지 못했습니다. 오래된 기록을 내보낸 뒤 정리해 주세요.");
+    if (!saveExpenses(spaceKV(), next, deviceMasked)) setToast("저장 공간이 부족해 이 기기에 저장하지 못했습니다. 오래된 기록을 내보낸 뒤 정리해 주세요.");
   };
+  const vendors = useMemo(() => vendorsOf(list), [list]);
   const projects = useMemo(() => [...new Set([...settings.projects, project, ...list.map((e) => e.project)].filter(Boolean))], [list, project, settings.projects]);
   const mine = useMemo(() => sortByDate(list.filter((e) => e.project === project)), [list, project]);
   const attention = useMemo(() => needsAttention(mine), [mine]);
@@ -796,8 +828,59 @@ export default function Home() {
   };
   const boxOf = (a: { x: number; y: number }, b: { x: number; y: number }): Box => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
 
+  /* ---------- 공간 (한 기기에서 여러 장부) ---------- */
+  const spaceRows: SpaceInfo[] = useMemo(
+    () => (ready && (view === "settings" || view === "intro") ? loadSpaces(window.localStorage).list.map((x) => describeSpace(window.localStorage, x.slot)) : []),
+    // 지금 공간의 이름, 건수, 연결이 바뀌면 다시 읽는다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ready, view, settings.org, list.length, meta.ws, spaceTick],
+  );
+  /** 공간을 바꾼다. 화면을 새로 열어 그 공간의 기록과 설정을 처음부터 읽는다. */
+  function switchSpace(slot: string) {
+    saveSpaces(window.localStorage, openSpace(loadSpaces(window.localStorage), slot));
+    window.location.assign(window.location.pathname);
+  }
+  function createSpace() {
+    const all = loadSpaces(window.localStorage);
+    if (all.list.length >= SPACE_MAX) return setSpaceNote(`공간은 ${SPACE_MAX}개까지 만들 수 있습니다. 쓰지 않는 공간을 지운 뒤 다시 만들어 주세요.`);
+    if (!saveSpaces(window.localStorage, addSpace(all, newSlot()))) return setSpaceNote("저장 공간이 부족해 공간을 만들지 못했습니다.");
+    window.location.assign(window.location.pathname);
+  }
+  /** 이 기기에서 공간을 지운다. 지금 열린 공간을 지우면 남은 첫 공간이 열린다. */
+  async function removeSpace(slot: string) {
+    const all = loadSpaces(window.localStorage);
+    const next = dropSpace(all, slot);
+    if (next === all) return;
+    await wipeSpace(window.localStorage, slot, [allMasked, allOriginals]);
+    saveSpaces(window.localStorage, next);
+    setConfirmDrop(null);
+    if (slot === all.active) window.location.assign(window.location.pathname);
+    else { setSpaceNote("공간을 이 기기에서 지웠습니다."); setSpaceTick((n) => n + 1); }
+  }
+  /** 아무것도 적지 않은 공간이고 다른 공간이 있으면, 이 공간을 없애고 돌아갈 수 있다. */
+  const canAbandon = spaceRows.length > 1 && !settings.onboarded && list.length === 0 && !meta.ws;
+
+  /** 사업 하나 또는 거래처 한 곳의 내역만 담은 공유 링크를 만들어 복사한다. 이름은 가리고, 사진은 담지 않는다. */
+  async function copyScopeLink(kind: "project" | "vendor", name: string) {
+    const subset = list.filter((e) => (kind === "vendor" ? vendorOf(e) === name : e.project === name));
+    const r = kind === "vendor" ? buildVendorReport(list, name) : buildReport(list, name, undefined, settings.budgets[name], closedBy(settings.closed, name, settings.org));
+    const proof = { fingerprint: await recordsFingerprint(subset), ledger: await summarize(live.current.led.ledger) };
+    const link = `${window.location.origin}/r#${await encodeShare({ ...buildShare(r, settings.org, { includeRows: true, showNames: false }), proof })}`;
+    let note = `"${name}" 공유 링크를 복사했습니다.`;
+    try { await navigator.clipboard.writeText(link); } catch { note = "복사하지 못했습니다. 아래 링크를 직접 선택해 복사해 주세요."; }
+    if (link.length > LONG_LINK) note += " 링크가 길어 일부 메신저에서 잘릴 수 있습니다.";
+    setScopeShare({ kind, name, link, note });
+  }
+
+  /** 방금 만든 공유 링크. 누른 쪽 카드(사업 또는 거래처) 안에 보인다. */
+  const scopeResult = (kind: "project" | "vendor") => (scopeShare.kind === kind ? <>
+    <TextInput id="scope-link" label={`"${scopeShare.name}" 공유 링크`} isReadOnly value={scopeShare.link} onChange={() => {}} />
+    <Button label="열어 보기" width="100%" href={scopeShare.link} target="_blank" rel="noreferrer" />
+    <Note>{scopeShare.note}</Note>
+  </> : null);
+
   function leaveWorkspace() {
-    window.localStorage.removeItem(SYNC_KEY);
+    spaceKV().removeItem(SYNC_KEY);
     setMeta(EMPTY_META); live.current.meta = EMPTY_META; setSyncNote(""); setConfirmLeave(false);
   }
   async function createWorkspace() {
@@ -830,7 +913,7 @@ export default function Home() {
       setJoinPass("");
     }
     const st: Settings = { ...live.current.settings, submitter: name, role: draft.approver === "approver" ? "approver" : "submitter", onboarded: true };
-    setSettings(st); live.current.settings = st; saveSettings(window.localStorage, st);
+    setSettings(st); live.current.settings = st; saveSettings(spaceKV(), st);
     keepMeta({ ...EMPTY_META, ws });
     window.history.replaceState(null, "", window.location.pathname);
     setErr(""); setJoinWs(null); go("list");
@@ -840,7 +923,7 @@ export default function Home() {
   function loadDemo() {
     leaveWorkspace();
     keep(DEMO_SETTINGS);
-    persist(resetToSeed(window.localStorage));
+    persist(resetToSeed(spaceKV()));
     setProject(DEMO_PROJECT); resetClose(); go("list");
   }
   function startOwn() {
@@ -886,7 +969,7 @@ export default function Home() {
     }
     const at = new Date().toISOString();
     download(`열린영수증_백업_${at.slice(0, 10)}.json`, makeBackup(settings, list, at, originals), "application/json");
-    try { window.localStorage.setItem(BACKUP_KEY, at); } catch { /* 적어 두지 못해도 백업은 내려받았다 */ }
+    try { spaceKV().setItem(BACKUP_KEY, at); } catch { /* 적어 두지 못해도 백업은 내려받았다 */ }
     setLastBackupAt(at);
     setToast(`백업 파일을 내려받았습니다. 기록 ${list.length}건, 원본 사진 ${Object.keys(originals).length}장이 들어 있습니다.`);
   }
@@ -1137,7 +1220,7 @@ export default function Home() {
           <Note>승인하는 사람으로 참여하면 승인할 때 내 이름이 승인자로 기록됩니다.</Note>
           <VStack className="grow" />
           <Main label={joining ? "확인하는 중…" : "참여하기"} isDisabled={joining} onClick={joinWorkspace} />
-          <Sub label="참여하지 않기" onClick={() => { window.history.replaceState(null, "", window.location.pathname); setJoinWs(null); setJoinPass(""); setErr(""); if (settings.onboarded || list.length) go("list"); }} />
+          <Sub label="참여하지 않기" onClick={() => { window.history.replaceState(null, "", window.location.pathname); if (canAbandon) return void removeSpace(activeSlot()); setJoinWs(null); setJoinPass(""); setErr(""); if (settings.onboarded || list.length) go("list"); }} />
         </Frame>
       );
     }
@@ -1170,6 +1253,7 @@ export default function Home() {
         </Card>
         <Sub label="데모 데이터 불러오기" onClick={loadDemo} />
         <Note>데모는 가상 단체와 가상 지출 2건으로 바로 둘러볼 수 있습니다.</Note>
+        {canAbandon ? <Sub label="만들지 않고 돌아가기" onClick={() => removeSpace(activeSlot())} /> : null}
         <Button label="개발자 안내 (에이전트 API)" variant="ghost" href="/developers" />
       </Frame>
     );
@@ -1248,9 +1332,35 @@ export default function Home() {
         <Card>
           <VStack gap={2}>
             <Heading level={3}>사업·행사</Heading>
-            <HStack gap={1.5} wrap="wrap">{projects.map((p) => <Token key={p} label={p} />)}</HStack>
+            <Note>사업·행사마다 그 사업의 결산 내역만 담은 공유 링크를 보낼 수 있습니다. 사람 이름과 영수증 사진은 담기지 않습니다. 공유 범위나 이름 표시를 바꾸려면 결산보고서 화면의 "보고서 공유"를 쓰세요.</Note>
+            <List hasDividers edge="flush" density="compact" data-testid="project-links">
+              {projects.map((p) => {
+                const mine = list.filter((e) => e.project === p);
+                return (
+                  <ListItem key={p} label={isClosed(settings.closed, p) ? `${p} (마감)` : p} description={`${mine.length}건 · ${won(totalAmount(mine))}`}
+                    endContent={<Button label="공유 링크 복사" tooltip={`${p} 공유 링크 복사`} size="sm" variant="secondary" isDisabled={!mine.length} onClick={() => copyScopeLink("project", p)} />} />
+                );
+              })}
+            </List>
+            {scopeResult("project")}
             <TextInput id="s-new-project" label="새 사업·행사 이름" value={newProject} placeholder="예: 겨울 캠프" onChange={setNewProject} />
             <Sub label="사업 추가" isDisabled={!newProject.trim()} onClick={() => { const n = newProject.trim(); keep(addProject(settings, n)); setProject(n); setNewProject(""); resetClose(); }} />
+          </VStack>
+        </Card>
+        <Card data-testid="vendors">
+          <VStack gap={2}>
+            <Heading level={3}>거래처</Heading>
+            <Note>기록에 적힌 거래처마다, 그 거래처와의 거래 내역만 담은 공유 링크를 보낼 수 있습니다. 서로 맞춰 볼 때 쓰세요. 같은 곳을 다른 이름으로 적었으면 따로 나옵니다.</Note>
+            {vendors.length ? (
+              <List hasDividers edge="flush" density="compact">
+                {vendors.map((v) => (
+                  <ListItem key={v.name} label={v.name} description={`${v.count}건 · ${won(v.amount)}`}
+                    endContent={<Button label="공유 링크 복사" tooltip={`${v.name} 공유 링크 복사`} size="sm" variant="secondary" onClick={() => copyScopeLink("vendor", v.name)} />} />
+                ))}
+              </List>
+            ) : <Note>아직 거래처가 적힌 기록이 없습니다.</Note>}
+            {scopeResult("vendor")}
+            <Note>이 링크에는 링크를 만든 때의 합계와 내역만 담깁니다. 사람 이름과 영수증 사진은 담기지 않고, 서버에도 저장되지 않습니다. 링크를 가진 사람은 누구나 볼 수 있습니다.</Note>
           </VStack>
         </Card>
         <Card data-testid="budget-card">
@@ -1278,6 +1388,31 @@ export default function Home() {
           <SegmentedControlItem value="submitter" label="기록을 올리는 사람" />
           <SegmentedControlItem value="approver" label="승인하는 사람" />
         </SegmentedControl>
+        <Card data-testid="spaces">
+          <VStack gap={2}>
+            <Heading level={3}>공간</Heading>
+            <Note>단체가 여럿이거나 사업마다 다른 사람들과 나눠 쓰려면 공간을 더 만드세요. 공간마다 기록, 설정, 초대 링크가 따로이고 서로 섞이지 않습니다.</Note>
+            <List hasDividers edge="flush" density="compact">
+              {spaceRows.map((sp) => {
+                const here = sp.slot === activeSlot();
+                const about = `기록 ${sp.count}건 · ${sp.connected ? (sp.locked ? "단체 공간 (암호)" : "단체 공간") : "이 기기에서만"}`;
+                return (
+                  <ListItem key={sp.slot || "first"} data-testid="space-row" label={sp.org || "이름 없는 공간"} description={here ? `${about} · 지금 열려 있음` : about}
+                    endContent={here ? null : (
+                      <HStack gap={1}>
+                        <Button label="열기" tooltip={`${sp.org || "이름 없는 공간"} 열기`} size="sm" variant="secondary" onClick={() => switchSpace(sp.slot)} />
+                        {sp.connected ? <Button label="초대 복사" tooltip="이 공간의 초대 링크 복사" size="sm" variant="ghost" onClick={async () => { try { await navigator.clipboard.writeText(`${window.location.origin}/app#${sp.invite}`); setSpaceNote(`"${sp.org || "이름 없는 공간"}" 초대 링크를 복사했습니다.`); } catch { setSpaceNote("복사하지 못했습니다. 그 공간을 열어 초대 링크를 직접 복사해 주세요."); } }} /> : null}
+                        <Button label={confirmDrop === sp.slot ? "지우기 확인" : "지우기"} size="sm" variant={confirmDrop === sp.slot ? "destructive" : "ghost"} onClick={() => (confirmDrop === sp.slot ? removeSpace(sp.slot) : setConfirmDrop(sp.slot))} />
+                      </HStack>
+                    )} />
+                );
+              })}
+            </List>
+            {confirmDrop !== null ? <Banner status="warning" title="이 기기에서만 지워집니다" description="단체 공간에 올라간 기록은 서버와 다른 기기에 남고, 초대 링크로 다시 참여할 수 있습니다. 이 기기에서만 쓰던 공간의 기록은 되살릴 수 없으니, 먼저 그 공간을 열어 백업을 내보내세요." /> : null}
+            <Sub label="새 공간 만들기" isDisabled={spaceRows.length >= SPACE_MAX} onClick={createSpace} />
+            {spaceNote ? <Note>{spaceNote}</Note> : null}
+          </VStack>
+        </Card>
         <Card data-testid="workspace">
           <VStack gap={3}>
             <Heading level={3}>단체 공간 (기기 간 공유)</Heading>
@@ -1369,7 +1504,7 @@ export default function Home() {
         </Card>
         <Button label="개발자 안내 (에이전트 API)" width="100%" href="/developers" />
         <Sub label="소개 다시 보기" onClick={() => { setErr(""); setDraft({ org: settings.org, submitter: settings.submitter, approver: settings.approver, project: settings.projects[0] ?? "", funder: settings.funder }); go("intro"); }} />
-        <Button label="모든 기록 지우고 데모로 초기화" variant="ghost" onClick={() => { window.localStorage.removeItem(STORAGE_KEY); window.localStorage.removeItem(SETTINGS_KEY); loadDemo(); setToast("데모 데이터로 초기화했습니다."); }} />
+        <Button label="모든 기록 지우고 데모로 초기화" variant="ghost" onClick={() => { spaceKV().removeItem(STORAGE_KEY); spaceKV().removeItem(SETTINGS_KEY); loadDemo(); setToast("데모 데이터로 초기화했습니다."); }} />
         <VStack className="grow" />
         <Main label="지출 목록으로" onClick={() => go("list")} />
       </Frame>

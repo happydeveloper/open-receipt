@@ -23,6 +23,7 @@ const amountCol = { key: "amount", header: "금액", align: "end" as const, rend
 
 /** 결산보고서 본문. 앱의 보고서 화면과 공유 링크 화면이 함께 쓴다. */
 export function ReportBody({ r, detail = true }: { r: Report; detail?: boolean }) {
+  if (r.scope === "vendor") return <VendorBody r={r} detail={detail} />;
   return (
     <>
       {r.closed ? <Banner status="success" title="마감된 결산보고서입니다" description={`${closedLine(r.closed)}. 마감한 뒤에는 이 사업의 기록을 고칠 수 없습니다.`} data-testid="report-closed" /> : null}
@@ -113,6 +114,46 @@ export function ReportBody({ r, detail = true }: { r: Report; detail?: boolean }
         <VStack width="100%"><Text type="supporting" color="secondary">확인자 (대표·승인자)</Text></VStack>
       </HStack>
       <Note>이 문서는 초안입니다. 지출의 적정성 판단과 최종 승인·제출은 조직의 담당자가 합니다.</Note>
+    </>
+  );
+}
+
+/** 거래처 한 곳과의 거래 내역. 단체 안에서만 볼 항목(확인할 항목, 환급 대상)은 없다. */
+function VendorBody({ r, detail }: { r: Report; detail: boolean }) {
+  return (
+    <>
+      <Heading level={2}>1. 요약</Heading>
+      <Table
+        idKey="id"
+        data={[{ id: "sum", count: `${r.count}건`, total: won(r.total), approved: won(r.approvedTotal) }]}
+        columns={[
+          { key: "count", header: "거래 건수", align: "end" },
+          { key: "total", header: "거래 합계", align: "end", renderCell: (x) => <Text id="report-total" hasTabularNumbers weight="semibold" textWrap="nowrap">{x.total}</Text> },
+          { key: "approved", header: "승인 완료 금액", align: "end", renderCell: (x) => num(x.approved) },
+        ]}
+      />
+      <Heading level={2}>2. 사업·행사별</Heading>
+      <Table
+        idKey="name"
+        data={r.byCategory.map((g) => ({ name: g.name, count: `${g.count}건`, amount: won(g.amount) }))}
+        columns={[{ key: "name", header: "사업·행사" }, { key: "count", header: "건수", align: "end" }, amountCol]}
+      />
+      {detail ? <>
+        <Heading level={2}>3. 거래 내역</Heading>
+        <VStack className="scroll-x wide-table">
+          <Table
+            idKey="id"
+            density="compact"
+            verticalAlign="top"
+            data={r.rows.map((x, i) => ({ ...x, id: String(i), amountText: won(x.amount) }))}
+            columns={[
+              { key: "date", header: "날짜", renderCell: (x) => num(x.date) }, { key: "item", header: "항목" }, { key: "amountText", header: "금액", align: "end", renderCell: (x) => num(x.amountText) },
+              { key: "budgetCategory", header: "사업·행사" }, { key: "payment", header: "결제" }, { key: "evidence", header: "증빙" }, { key: "status", header: "상태" },
+            ]}
+          />
+        </VStack>
+      </> : null}
+      <Note>단체의 기록에서 이 거래처 이름으로 적힌 지출만 추린 것입니다. 금액이나 날짜가 다르면 단체에 알려 주세요.</Note>
     </>
   );
 }

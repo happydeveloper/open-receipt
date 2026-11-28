@@ -28,7 +28,7 @@ export default function SharedReportPage() {
   return (
     <VStack as="main" className="app" gap={0} maxWidth={900}>
       <HStack as="header" className="app-bar" justify="between" align="center" paddingInline={4} paddingBlock={3} gap={2}>
-        <Heading level={1}>{data ? `${data.report.project} 결산보고서` : "결산보고서"}</Heading>
+        <Heading level={1}>{data ? (data.report.scope === "vendor" ? `${data.report.project} 거래 내역` : `${data.report.project} 결산보고서`) : "결산보고서"}</Heading>
         <Text type="supporting" color="secondary">열린영수증</Text>
       </HStack>
       <VStack gap={4} padding={4} className="grow">
@@ -38,8 +38,8 @@ export default function SharedReportPage() {
             actions={<Button label="열린영수증 열기" href="/app" />} />
         ) : null}
         {data ? <>
-          <Banner status="info" title={`${data.org || "단체"}에서 공유한 보고서 초안입니다.`}
-            description={`공유일 ${data.sharedAt.slice(0, 10)} · 지출 기간 ${data.report.period} · ${data.options.includeRows ? "지출 내역 포함" : "요약만"}${data.options.showNames ? "" : " · 이름 가림"}. 읽기 전용이며 최신 내용이 아닐 수 있습니다.`} />
+          <Banner status="info" title={`${data.org || "단체"}에서 공유한 ${data.report.scope === "vendor" ? "거래 내역" : "보고서 초안"}입니다.`}
+            description={`공유일 ${data.sharedAt.slice(0, 10)} · ${data.report.scope === "vendor" ? "거래" : "지출"} 기간 ${data.report.period} · ${data.options.includeRows ? "지출 내역 포함" : "요약만"}${data.options.showNames ? "" : " · 이름 가림"}. 읽기 전용이며 최신 내용이 아닐 수 있습니다.`} />
           <ReportBody r={data.report} detail={data.options.includeRows} />
           {data.proof ? <ProofCard fingerprint={data.proof.fingerprint} ledger={data.proof.ledger} /> : null}
           <HStack gap={2} className="noprint">
