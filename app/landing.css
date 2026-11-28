@@ -4,10 +4,11 @@
 .lp-wrap { max-width: 1080px; margin: 0 auto; padding: 0 var(--spacing-5); }
 .lp-nav { position: sticky; top: 0; z-index: 5; background: var(--color-background-surface); border-bottom: 1px solid var(--color-border); }
 .lp-nav .lp-wrap { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-3); padding-block: var(--spacing-3); }
-.lp-brand { display: flex; align-items: center; gap: var(--spacing-2); font-weight: var(--font-weight-semibold); font-size: var(--font-size-lg); }
+.lp-brand { display: flex; align-items: center; gap: var(--spacing-2); flex-shrink: 0; white-space: nowrap; font-weight: var(--font-weight-semibold); font-size: var(--font-size-lg); }
 .lp-beta { font-size: var(--font-size-xs); font-weight: var(--font-weight-semibold); color: var(--color-text-success); border: 1px solid currentColor; border-radius: var(--radius-full); padding: 0 var(--spacing-2); line-height: 1.6; }
 .lp-brand img { width: 32px; height: 32px; border-radius: var(--radius-element); }
-.lp-nav-links { display: flex; gap: var(--spacing-2); align-items: center; }
+/* 단체 이름이 좁아져 글자가 세로로 쌓이지 않게: 이름은 줄지 않고, 자리가 모자라면 메뉴를 줄인다 */
+.lp-nav-links { display: flex; gap: var(--spacing-2); align-items: center; flex-shrink: 0; white-space: nowrap; }
 .lp section { padding-block: var(--spacing-12); }
 .lp section + section { border-top: 1px solid var(--color-border); }
 .lp-tint { background: var(--color-background-body); }
@@ -57,7 +58,10 @@
   .lp-step:nth-child(even) .lp-step-media { order: -1; }
   .lp-two { grid-template-columns: 1fr 1fr; }
 }
-@media (max-width: 520px) { .lp-nav-links .lp-hide-sm { display: none; } .lp section { padding-block: var(--spacing-10); } }
+/* 가로가 좁으면 메뉴를 줄인다. 빠진 메뉴는 아래 본문의 단추와 차례로 갈 수 있다 */
+@media (max-width: 900px) { .lp-nav-links .lp-hide-sm { display: none; } }
+@media (max-width: 380px) { .lp-nav-links .lp-hide-xxs { display: none; } }
+@media (max-width: 520px) { .lp-nav-links .lp-hide-xs { display: none; } .lp-nav-links { gap: var(--spacing-1); } .lp section { padding-block: var(--spacing-10); } }
 /* 사용 안내 (/guide) */
 .lp a.lp-brand { color: inherit; text-decoration: none; }
 .gd-role { color: inherit; text-decoration: none; }

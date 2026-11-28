@@ -671,3 +671,17 @@ test("서명 원장: 혼자 쓰는 기기도 기록마다 서명을 남기고, �
   await expect(page.getByTestId("detail")).toContainText("190,000원");
   await expect(page.getByTestId("detail")).toContainText("지금 내용에 서명한 기기가 없습니다");
 });
+
+test("소개 페이지 머리말: 좁은 화면에서도 이름이 한 줄로 나오고 가로로 넘치지 않는다", async ({ browser }) => {
+  for (const width of [320, 390, 550, 768, 1100]) {
+    const p = await (await browser.newContext({ viewport: { width, height: 700 }, locale: "ko-KR" })).newPage();
+    for (const path of ["/", "/guide"]) {
+      await p.goto(path);
+      const brand = await p.locator(".lp-brand").boundingBox();
+      expect(brand!.height, `${path} 너비 ${width}: 이름이 여러 줄로 쌓였다`).toBeLessThan(40);
+      expect(await p.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), `${path} 너비 ${width}: 가로로 넘친다`).toBe(0);
+    }
+    await expect(p.getByRole("link", { name: /지금 써 보기|앱 열기|써 보기/ }).first()).toBeVisible();
+    await p.context().close();
+  }
+});

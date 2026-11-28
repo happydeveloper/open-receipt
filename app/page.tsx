@@ -75,9 +75,9 @@ export default function Landing() {
           <nav className="lp-nav-links">
             <span className="lp-hide-sm"><Button label="시연 영상" variant="ghost" size="sm" href="#demo" /></span>
             <span className="lp-hide-sm"><Button label="어떻게 쓰나요" variant="ghost" size="sm" href="#how" /></span>
-            <Button label="사용 안내" variant="ghost" size="sm" href="/guide" />
+            <span className="lp-hide-xxs"><Button label="사용 안내" variant="ghost" size="sm" href="/guide" /></span>
             <span className="lp-hide-sm"><Button label="기술" variant="ghost" size="sm" href="#tech" /></span>
-            <Button label="출시 알림" variant="ghost" size="sm" href="#waitlist" />
+            <span className="lp-hide-xs"><Button label="출시 알림" variant="ghost" size="sm" href="#waitlist" /></span>
             <Button label="지금 써 보기" variant="primary" size="sm" href="/app" />
           </nav>
         </div>
@@ -89,13 +89,13 @@ export default function Landing() {
             <div className="lp-hero-text">
               <p className="lp-eyebrow">작은 단체를 위한 정산 에이전트 · 베타</p>
               <h1>행사가 끝나면, 영수증만 올리세요</h1>
-              <p className="lp-lead">열린영수증은 회계 담당자가 따로 없는 단체·동아리·모임의 행사 정산과 월말·연말 보고를 돕습니다. AI 에이전트가 영수증을 읽어 기록을 채우고, 결산보고서까지 만들어 둡니다.</p>
+              <p className="lp-lead">회계 담당자가 따로 없는 단체, 동아리, 모임을 위한 정산 도구입니다. 영수증 사진을 올리면 AI 에이전트가 날짜와 금액을 읽어 기록을 채우고, 행사가 끝나면 결산보고서로 묶어 드립니다.</p>
               <div className="lp-cta">
                 <Button label="지금 써 보기" variant="primary" size="lg" href="/app" />
                 <Button label="사용 안내 보기" size="lg" href="/guide" />
                 <Button label="출시 알림 받기" size="lg" href="#waitlist" />
               </div>
-              <p className="lp-note">설치나 가입 없이 바로 열립니다. 가상 데이터로 먼저 둘러볼 수 있습니다. <strong>지금은 베타(정식 출시 전 시험 버전)입니다.</strong> 기능과 화면이 바뀔 수 있으니, 중요한 기록은 설정의 백업으로 따로 보관해 주세요.</p>
+              <p className="lp-note">가입도 설치도 필요 없습니다. 가상 자료로 먼저 둘러보세요. <strong>아직 베타(정식 출시 전 시험 버전)라</strong> 기능과 화면이 바뀔 수 있습니다. 중요한 기록은 설정에서 백업해 두세요.</p>
             </div>
             <Phone src="3-agent" alt="에이전트가 영수증을 읽어 기록을 채우고, 모르는 것만 질문하는 화면" />
           </div>
